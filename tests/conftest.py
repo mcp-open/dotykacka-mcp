@@ -1,7 +1,7 @@
 """Sdílené fixtures.
 
 `OPENMCP_PII_SALT` je v provozu povinný (bez něj konektor nenaběhne — viz
-`connector.pii.derive_key`). Testy ho proto dostanou automaticky.
+`openmcp_sdk.pii.derive_key`). Testy ho proto dostanou automaticky.
 """
 
 from __future__ import annotations

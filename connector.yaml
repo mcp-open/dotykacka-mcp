@@ -9,7 +9,7 @@ summary: >
   osobní data (jména, e-maily, telefony, adresy, IČO/DIČ) jsou před odpovědí
   pseudonymizována na stabilní tokeny typu <EMAIL_3f9c1a2b4d5e>, takže do LLM
   neproteče PII (GDPR).
-sdk_min_version: 0.3.0
+sdk_min_version: 0.4.0
 
 # Delegovaná OAuth autorizace: uživatel se přihlásí přímo u Dotykačky a schválí
 # přístup; platforma pak konektoru per-uživatele doručí refresh_token + cloud_id

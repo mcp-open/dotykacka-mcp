@@ -1,11 +1,13 @@
 """Unit testy pro `dotykacka` nástroje — přímo, bez běžícího MCP transportu.
 
-Konektor čte identitu i OAuth přístup z `openmcp_sdk.current_context().oauth`
-(SDK 0.3 kontrakt, staví se paralelně). Testy proto:
+Konektor čte identitu i OAuth přístup z `openmcp_sdk.current_context().oauth`.
+Testy proto:
 
 * monkeypatchují `server.current_context` na lehký fake kontext s `.oauth`,
-  `.config` a `.principal` (stejný nápad jako `raynet` testy s `RaynetClient`);
-* monkeypatchují `server.DotykackaClient` na stub bez sítě.
+  `.config` a `.principal`;
+* monkeypatchují `server.UpstreamClient` na stub bez sítě — retry, timeout,
+  401-refresh a bearer hlavičku už otestoval `openmcp-sdk` (`tests/test_http.py`)
+  obecně; tady se testuje jen doménová logika (cloud-scoped cesta, PII, agregace).
 
 Díky `importorskip` se celý modul přeskočí, dokud není `fastmcp` k dispozici —
 neblokuje to ostatní (strukturální) testy.
@@ -20,12 +22,9 @@ import pytest
 
 pytest.importorskip("fastmcp")
 
-import httpx  # noqa: E402
-
 from openmcp_sdk.envelope import ConnectorError, ErrorCode  # noqa: E402
 
 from connector import server  # noqa: E402
-from connector.client import BASE_URL, DotykackaClient, DotykackaError  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -46,7 +45,7 @@ class _FakeOAuth:
 
 
 class _FakeClient:
-    """Stub DotykackaClient — nahrazuje síť, sleduje volání."""
+    """Stub `UpstreamClient` — nahrazuje síť, sleduje volání na úrovni cesty."""
 
     def __init__(self, responses=None, cloud=None, error: Exception | None = None) -> None:
         self.responses = responses or {}
@@ -54,16 +53,19 @@ class _FakeClient:
         self.error = error
         self.calls: list[tuple[str, dict | None]] = []
 
-    def cloud_get(self, resource, params=None):
-        self.calls.append((resource, params))
-        if self.error is not None:
-            raise self.error
-        return self.responses.get(resource.split("/")[0], {"data": []})
+    @staticmethod
+    def seg(value: object) -> str:
+        return str(value)
 
-    def get_cloud(self):
+    def get_json(self, path: str, params=None):
+        self.calls.append((path, params))
         if self.error is not None:
             raise self.error
-        return self.cloud
+        # path je "/clouds/{cloud_id}" (get_cloud) nebo "/clouds/{cloud_id}/{resource}".
+        resource = path.split("/", 3)[3] if path.count("/") >= 3 else ""
+        if not resource:
+            return self.cloud
+        return self.responses.get(resource.split("/")[0], {"data": []})
 
     def close(self):
         pass
@@ -79,7 +81,7 @@ def _ctx(monkeypatch, *, config=None, sub="u1", oauth=None, client=None):
     )
     monkeypatch.setattr(server, "current_context", lambda: fake_ctx)
     if client is not None:
-        monkeypatch.setattr(server, "DotykackaClient", lambda o: client)
+        monkeypatch.setattr(server, "UpstreamClient", lambda **kw: client)
     yield fake_ctx
 
 
@@ -112,7 +114,7 @@ def test_no_write_or_delete_tools():
 
 
 # --------------------------------------------------------------------------- #
-# Envelope + provenance
+# Envelope + provenance + cloud-scoped cesta
 # --------------------------------------------------------------------------- #
 def test_list_orders_returns_envelope(monkeypatch):
     fake = _FakeClient({"orders": {"data": [{"id": 1, "totalValueRounded": 100}]}})
@@ -122,6 +124,9 @@ def test_list_orders_returns_envelope(monkeypatch):
     assert result.provenance.source_id == "dotykacka"
     assert result.provenance.source_url.endswith("/clouds/355745136/orders")
     assert result.warnings == []
+    # Cloud-scoped cesta se skládá `/clouds/{cloud_id}/{resource}` — jediné,
+    # co je u dotykačky nad rámec obecného SDK klienta.
+    assert fake.calls[0][0] == "/clouds/355745136/orders"
 
 
 def test_get_cloud_info_returns_envelope(monkeypatch):
@@ -130,6 +135,7 @@ def test_get_cloud_info_returns_envelope(monkeypatch):
         result = server.get_cloud_info()
     assert result.data["name"] == "Kavárna"
     assert result.provenance.source_url.endswith("/clouds/355745136")
+    assert fake.calls[0][0] == "/clouds/355745136"
 
 
 def test_list_orders_builds_date_filter(monkeypatch):
@@ -263,7 +269,7 @@ def test_sales_summary_defaults_to_last_30_days(monkeypatch):
 # Mapování chyb
 # --------------------------------------------------------------------------- #
 def test_upstream_error_maps_to_connector_error(monkeypatch):
-    fake = _FakeClient(error=DotykackaError("HTTP 500", status_code=500))
+    fake = _FakeClient(error=ConnectorError(ErrorCode.UPSTREAM_ERROR, "upstream selhal se stavem 500", status=500))
     with _ctx(monkeypatch, client=fake):
         with pytest.raises(ConnectorError) as exc:
             server.list_orders()
@@ -282,7 +288,7 @@ def test_test_connection_success(monkeypatch):
 
 
 def test_test_connection_401_maps_to_invalid_input(monkeypatch):
-    fake = _FakeClient(error=DotykackaError("401", status_code=401))
+    fake = _FakeClient(error=ConnectorError(ErrorCode.FORBIDDEN, "upstream odmítl přístupové údaje", status=401))
     with _ctx(monkeypatch, client=fake):
         with pytest.raises(ConnectorError) as exc:
             server.test_connection()
@@ -290,85 +296,9 @@ def test_test_connection_401_maps_to_invalid_input(monkeypatch):
 
 
 def test_test_connection_5xx_maps_to_upstream_unavailable(monkeypatch):
-    fake = _FakeClient(error=DotykackaError("503", status_code=503))
+    fake = _FakeClient(error=ConnectorError(ErrorCode.UPSTREAM_ERROR, "upstream selhal se stavem 503", status=503))
     with _ctx(monkeypatch, client=fake):
         with pytest.raises(ConnectorError) as exc:
             server.test_connection()
     assert exc.value.code == ErrorCode.UPSTREAM_UNAVAILABLE
     assert "503" not in exc.value.message
-
-
-# --------------------------------------------------------------------------- #
-# Klient — obnova tokenu při 401 (přes injektovaný httpx transport)
-# --------------------------------------------------------------------------- #
-def test_client_refreshes_token_once_on_401():
-    """Upstream 401 → oauth.invalidate() + jeden retry s čerstvým tokenem."""
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return httpx.Response(401, json={"error": "expired"})
-        return httpx.Response(200, json={"data": [{"id": 1}]})
-
-    oauth = _FakeOAuth()
-    client = DotykackaClient(oauth, transport=httpx.MockTransport(handler))
-    try:
-        result = client.cloud_get("orders")
-    finally:
-        client.close()
-
-    assert result == {"data": [{"id": 1}]}
-    assert oauth.invalidated == 1
-    assert calls["n"] == 2
-    assert oauth.token_calls == 2  # token se bere čerstvý pro každý pokus
-
-
-def test_client_sends_bearer_and_cloud_path():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["auth"] = request.headers.get("Authorization")
-        return httpx.Response(200, json={"ok": True})
-
-    oauth = _FakeOAuth(cloud_id="42")
-    client = DotykackaClient(oauth, transport=httpx.MockTransport(handler))
-    try:
-        client.cloud_get("products", {"limit": 10})
-    finally:
-        client.close()
-
-    assert seen["auth"] == "Bearer fake-access-token"
-    assert seen["url"].startswith(f"{BASE_URL}/clouds/42/products")
-    assert "limit=10" in seen["url"]
-
-
-def test_client_persistent_401_raises():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, json={"error": "revoked"})
-
-    client = DotykackaClient(_FakeOAuth(), transport=httpx.MockTransport(handler))
-    try:
-        with pytest.raises(DotykackaError) as exc:
-            client.cloud_get("orders")
-    finally:
-        client.close()
-    assert exc.value.status_code == 401
-
-
-def test_client_does_not_retry_long_window_rate_limit():
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        return httpx.Response(429, headers={"Retry-After": "120"}, json={"error": "limited"})
-
-    client = DotykackaClient(_FakeOAuth(), transport=httpx.MockTransport(handler))
-    try:
-        with pytest.raises(DotykackaError) as exc:
-            client.cloud_get("orders")
-    finally:
-        client.close()
-    assert exc.value.status_code == 429
-    assert calls["n"] == 1

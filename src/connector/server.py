@@ -3,9 +3,10 @@
 Delegovaná OAuth autorizace: identitu i OAuth přístup plní SDK transport před
 každým voláním nástroje. Nástroj si přes ``current_context().oauth``
 (``DelegatedOAuthClient``) vyžádá krátkodobý access token a ``cloud_id``, sestaví
-klienta (`connector.client.DotykackaClient`) a volá Dotykačka API. Refresh_token
-→ access token výměnu (``POST /v2/signin/token``) i cache tokenu řeší SDK; při
-upstream 401 klient jednou zavolá ``oauth.invalidate()`` a zkusí to znovu.
+sdílený `openmcp_sdk.http.UpstreamClient` (``token_provider=ctx.oauth``) a volá
+Dotykačka API. Refresh_token → access token výměnu (``POST /v2/signin/token``)
+i cache tokenu řeší SDK; při upstream 401 klient jednou zavolá
+``oauth.invalidate()`` a zkusí to znovu — to už dělá `UpstreamClient` sám.
 
 Vzory (plain funkce místo přímého `@mcp.tool` dekorátoru, envelope výstup,
 per-request PII sanitizace, provenance) jsou 1:1 s `raynet` konektorem — viz
@@ -33,10 +34,12 @@ from openmcp_sdk import (
     current_context,
     now_utc_iso,
 )
+from openmcp_sdk.http import SERVER_ERRORS_ONLY, UpstreamClient
+from openmcp_sdk.http import encode_segment as _seg
 from openmcp_sdk.logging import setup as _log_setup
+from openmcp_sdk.pii import Pseudonymizer, derive_key
 
-from connector.client import BASE_URL, DotykackaClient, DotykackaError, _seg
-from connector.pii import Pseudonymizer, derive_key
+from connector.pii_fields import POLICY
 from connector.schemas import (
     CategoryListResult,
     CloudInfoResult,
@@ -51,6 +54,8 @@ from connector.schemas import (
 
 _log_setup(component=os.getenv("OPENMCP_COMPONENT", "mcp-dotykacka"))
 logger = logging.getLogger(__name__)
+
+BASE_URL = "https://api.dotykacka.cz/v2"
 
 # Default a tvrdý strop parametru `limit` u list nástrojů. LLM občas pošle limit
 # v tisících — clamp chrání kontextové okno i Dotykačka API rate-limit.
@@ -130,16 +135,38 @@ class _Session:
 
     def __init__(self) -> None:
         ctx = current_context()
-        self.client = DotykackaClient(ctx.oauth)
+        # `ctx.oauth` splňuje `openmcp_sdk.http.TokenProvider` (access_token() +
+        # invalidate()) — `UpstreamClient` samo obnoví token jednou při 401.
+        self.client = UpstreamClient(
+            base_url=BASE_URL, token_provider=ctx.oauth, retry=SERVER_ERRORS_ONLY
+        )
         self.anonymize = bool(ctx.config.get("anonymize_data", True))
         self.pseudo: Pseudonymizer | None = None
         if self.anonymize:
             # Cloud je skutečný datový tenant. Jeden uživatel může přepojit jiný
             # cloud; jeho tokeny pak nesmí být korelovatelné s předchozím cloudem.
-            self.pseudo = Pseudonymizer(derive_key(f"{ctx.principal.sub}:{ctx.oauth.cloud_id}"))
+            # `derive_key(sub, cloud_id)` dá bit-identické bajty jako dřívější
+            # ruční `derive_key(f"{sub}:{cloud_id}")`.
+            self.pseudo = Pseudonymizer(
+                derive_key(ctx.principal.sub, ctx.oauth.cloud_id), POLICY
+            )
 
     def sanitize(self, data: Any, *, person_names: bool = False) -> Any:
-        return self.pseudo.sanitize(data, person_names=person_names) if self.pseudo is not None else data
+        return (
+            self.pseudo.sanitize(data, person_scope=person_names)
+            if self.pseudo is not None
+            else data
+        )
+
+    def cloud_get(self, resource: str, params: dict[str, Any] | None = None) -> Any:
+        """GET zdroje v rámci cloudu: `/clouds/{cloud_id}/{resource}`."""
+        cloud = self.client.seg(current_context().oauth.cloud_id)
+        path = f"/clouds/{cloud}/{resource}" if resource else f"/clouds/{cloud}"
+        return self.client.get_json(path, params)
+
+    def get_cloud(self) -> Any:
+        """Detail cloudu (provozovny): `/clouds/{cloud_id}`."""
+        return self.cloud_get("")
 
     def __enter__(self) -> _Session:
         return self
@@ -166,11 +193,11 @@ def _fetch(
     *,
     person_names: bool = False,
 ) -> Any:
-    """GET zdroje v rámci cloudu + (volitelně) PII sanitizace. Chyby → ConnectorError."""
-    try:
-        data = session.client.cloud_get(resource, params)
-    except DotykackaError as exc:
-        raise ConnectorError(ErrorCode.UPSTREAM_ERROR, str(exc)) from exc
+    """GET zdroje v rámci cloudu + (volitelně) PII sanitizace.
+
+    Chyby jsou už `ConnectorError` — mapuje je sdílený `UpstreamClient`.
+    """
+    data = session.cloud_get(resource, params)
     return session.sanitize(data, person_names=person_names)
 
 
@@ -339,11 +366,7 @@ def list_employees(
 def get_cloud_info() -> CloudInfoResult:
     """Základní informace o cloudu (provozovně), pro který je konektor propojen."""
     with _Session() as session:
-        try:
-            data = session.client.get_cloud()
-        except DotykackaError as exc:
-            raise ConnectorError(ErrorCode.UPSTREAM_ERROR, str(exc)) from exc
-        data = session.sanitize(data)
+        data = session.sanitize(session.get_cloud())
     return CloudInfoResult(data=data, provenance=_provenance(""), warnings=[])
 
 
@@ -451,22 +474,22 @@ def test_connection() -> str:
     """Ad-hoc test spojení s Dotykačkou — ověří, že OAuth přístup funguje.
 
     Lehký GET `/clouds/{cloud_id}` (bez PII sanitizace ani envelope). Chyby se
-    klasifikují strukturovaně přes `DotykackaError.status_code`, ne parsováním
+    klasifikují strukturovaně přes `ConnectorError.status`, ne parsováním
     textu: 401/403 (vypršelá/odvolaná autorizace) → INVALID_INPUT (uživatel to
     může opravit novým propojením), cokoli jiného (timeout, 5xx, rate limit) →
     UPSTREAM_UNAVAILABLE. Klientovi se nikdy nevrací syrový text výjimky.
     """
     try:
-        client = DotykackaClient(_oauth())
-    except (DotykackaError, AttributeError, KeyError) as exc:
+        client = UpstreamClient(base_url=BASE_URL, token_provider=_oauth(), retry=SERVER_ERRORS_ONLY)
+    except (ConnectorError, AttributeError, KeyError) as exc:
         raise ConnectorError(
             ErrorCode.INVALID_INPUT, "Chybí platná autorizace Dotykačky"
         ) from exc
 
     try:
-        client.get_cloud()
-    except DotykackaError as exc:
-        if exc.status_code in (401, 403):
+        client.get_json(f"/clouds/{client.seg(current_context().oauth.cloud_id)}")
+    except ConnectorError as exc:
+        if exc.status in (401, 403):
             raise ConnectorError(
                 ErrorCode.INVALID_INPUT,
                 "Autorizace Dotykačky vypršela nebo byla odvolána — propoj konektor znovu.",
