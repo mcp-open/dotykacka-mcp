@@ -137,8 +137,8 @@ def test_list_orders_builds_date_filter(monkeypatch):
     with _ctx(monkeypatch, client=fake):
         server.list_orders(date_from="2026-01-01", date_to="2026-02-01")
     _, params = fake.calls[0]
-    assert "created|gteq|2026-01-01T00:00:00.000Z" in params["filter"]
-    assert "created|lt|2026-02-01T00:00:00.000Z" in params["filter"]
+    assert "created|gteq|2025-12-31T23:00:00.000Z" in params["filter"]
+    assert "created|lt|2026-01-31T23:00:00.000Z" in params["filter"]
 
 
 def test_invalid_date_raises_invalid_input(monkeypatch):
@@ -146,6 +146,14 @@ def test_invalid_date_raises_invalid_input(monkeypatch):
     with _ctx(monkeypatch, client=fake):
         with pytest.raises(ConnectorError) as exc:
             server.list_orders(date_from="loni")
+    assert exc.value.code == ErrorCode.INVALID_INPUT
+
+
+def test_date_rejects_timestamp_instead_of_silently_truncating(monkeypatch):
+    fake = _FakeClient({"orders": {"data": []}})
+    with _ctx(monkeypatch, client=fake):
+        with pytest.raises(ConnectorError) as exc:
+            server.list_orders(date_from="2026-01-01T12:00:00")
     assert exc.value.code == ErrorCode.INVALID_INPUT
 
 
@@ -187,6 +195,22 @@ def test_product_names_not_tokenized(monkeypatch):
     assert result.data["data"][0]["name"] == "Espresso"
 
 
+def test_employee_generic_name_is_pseudonymized(monkeypatch):
+    fake = _FakeClient({"employees": {"data": [{"id": 3, "name": "Jan Novák"}]}})
+    with _ctx(monkeypatch, client=fake):
+        result = server.list_employees()
+    assert result.data["data"][0]["name"].startswith("<NAME_")
+
+
+def test_same_user_different_cloud_has_different_pseudonym(monkeypatch):
+    fake = _FakeClient({"customers": {"data": [{"name": "Jan Novák"}]}})
+    with _ctx(monkeypatch, oauth=_FakeOAuth("cloud-a"), client=fake):
+        first = server.list_customers().data["data"][0]["name"]
+    with _ctx(monkeypatch, oauth=_FakeOAuth("cloud-b"), client=fake):
+        second = server.list_customers().data["data"][0]["name"]
+    assert first != second
+
+
 # --------------------------------------------------------------------------- #
 # Agregace
 # --------------------------------------------------------------------------- #
@@ -203,7 +227,14 @@ def test_sales_summary_aggregates(monkeypatch):
                 ],
             },
             {"documentType": "RECEIPT", "totalValueRounded": 50, "orderItems": []},
-            {"documentType": "RECEIPT", "totalValueRounded": 999, "canceledDate": "2026-01-05"},
+            {
+                "documentType": "RECEIPT",
+                "totalValueRounded": 999,
+                "canceledDate": "2026-01-05",
+                "orderItems": [
+                    {"name": "Stornovaný produkt", "quantity": 1, "totalPriceWithVat": 999, "vat": 21}
+                ],
+            },
         ]
     }
     fake = _FakeClient({"orders": orders})
@@ -216,6 +247,7 @@ def test_sales_summary_aggregates(monkeypatch):
     assert d["revenue"] == 150.0  # storno se do tržby nepočítá
     assert d["average_receipt"] == 75.0
     assert d["top_products"][0]["name"] == "Espresso"
+    assert all(p["name"] != "Stornovaný produkt" for p in d["top_products"])
     assert d["vat"]["21"] == 80.0
     assert d["truncated"] is False
 
@@ -323,3 +355,20 @@ def test_client_persistent_401_raises():
     finally:
         client.close()
     assert exc.value.status_code == 401
+
+
+def test_client_does_not_retry_long_window_rate_limit():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, headers={"Retry-After": "120"}, json={"error": "limited"})
+
+    client = DotykackaClient(_FakeOAuth(), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(DotykackaError) as exc:
+            client.cloud_get("orders")
+    finally:
+        client.close()
+    assert exc.value.status_code == 429
+    assert calls["n"] == 1

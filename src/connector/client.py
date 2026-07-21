@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.dotykacka.cz/v2"
 
 # Přechodné stavy, u nichž má smysl opakovat pokus.
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_RETRYABLE_STATUS = {500, 502, 503, 504}
 _MAX_ATTEMPTS = 4
 _BACKOFF_BASE = 0.5  # s — exponenciálně: 0.5, 1, 2 …
 _BACKOFF_CAP = 8.0
@@ -179,7 +179,7 @@ class DotykackaClient:
 
             if resp.status_code == 429:
                 raise DotykackaError(
-                    "Překročen rate limit Dotykačka API (429) i po opakování.",
+                    "Překročen rate limit Dotykačka API (429); další pokus proveď později.",
                     status_code=429,
                 )
             if resp.status_code == 401:

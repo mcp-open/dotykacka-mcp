@@ -17,8 +17,10 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -57,7 +59,7 @@ _MAX_LIMIT = 100
 
 # Strop, kolik dokladů smí `sales_summary` stáhnout. Chrání paměť i API rate-limit;
 # u delšího období se výsledek označí `truncated=True`.
-_MAX_RECORDS = 5000
+_MAX_RECORDS = 500
 _PAGE_LIMIT = 100
 
 mcp: FastMCP = FastMCP(
@@ -96,15 +98,26 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def _day(value: str, label: str) -> datetime:
-    """Parsuj YYYY-MM-DD na začátek dne v UTC; jasná chyba místo 500 z upstreamu."""
+def _configured_timezone() -> ZoneInfo:
+    """Časové pásmo provozovny; POS den se nesmí řezat na půlnoci UTC."""
+    raw = str(current_context().config.get("timezone", "Europe/Prague")).strip()
     try:
-        parsed = datetime.fromisoformat(value)
+        return ZoneInfo(raw)
+    except ZoneInfoNotFoundError as exc:
+        raise ConnectorError(ErrorCode.INVALID_INPUT, "Neplatné časové pásmo konektoru.") from exc
+
+
+def _day(value: str, label: str) -> datetime:
+    """Parsuj YYYY-MM-DD jako lokální půlnoc provozovny a převeď ji na UTC."""
+    try:
+        if len(value) != 10:
+            raise ValueError
+        parsed = date.fromisoformat(value)
     except (TypeError, ValueError) as exc:
         raise ConnectorError(
             ErrorCode.INVALID_INPUT, f"{label} musí být datum ve formátu YYYY-MM-DD."
         ) from exc
-    return parsed.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    return datetime.combine(parsed, datetime.min.time(), tzinfo=_configured_timezone()).astimezone(timezone.utc)
 
 
 class _Session:
@@ -121,10 +134,12 @@ class _Session:
         self.anonymize = bool(ctx.config.get("anonymize_data", True))
         self.pseudo: Pseudonymizer | None = None
         if self.anonymize:
-            self.pseudo = Pseudonymizer(derive_key(ctx.principal.sub))
+            # Cloud je skutečný datový tenant. Jeden uživatel může přepojit jiný
+            # cloud; jeho tokeny pak nesmí být korelovatelné s předchozím cloudem.
+            self.pseudo = Pseudonymizer(derive_key(f"{ctx.principal.sub}:{ctx.oauth.cloud_id}"))
 
-    def sanitize(self, data: Any) -> Any:
-        return self.pseudo.sanitize(data) if self.pseudo is not None else data
+    def sanitize(self, data: Any, *, person_names: bool = False) -> Any:
+        return self.pseudo.sanitize(data, person_names=person_names) if self.pseudo is not None else data
 
     def __enter__(self) -> _Session:
         return self
@@ -144,13 +159,19 @@ def _provenance(resource: str) -> Provenance:
     )
 
 
-def _fetch(session: _Session, resource: str, params: dict[str, Any] | None = None) -> Any:
+def _fetch(
+    session: _Session,
+    resource: str,
+    params: dict[str, Any] | None = None,
+    *,
+    person_names: bool = False,
+) -> Any:
     """GET zdroje v rámci cloudu + (volitelně) PII sanitizace. Chyby → ConnectorError."""
     try:
         data = session.client.cloud_get(resource, params)
     except DotykackaError as exc:
         raise ConnectorError(ErrorCode.UPSTREAM_ERROR, str(exc)) from exc
-    return session.sanitize(data)
+    return session.sanitize(data, person_names=person_names)
 
 
 def _page_items(payload: Any) -> list[dict[str, Any]]:
@@ -301,7 +322,7 @@ def list_customers(
     nedají se rozklíčovat zpět.
     """
     with _Session() as session:
-        data = _fetch(session, "customers", {"limit": _clamp_limit(limit), "page": max(1, page)})
+        data = _fetch(session, "customers", {"limit": _clamp_limit(limit), "page": max(1, page)}, person_names=True)
     return CustomerListResult(data=data, provenance=_provenance("customers"), warnings=[])
 
 
@@ -311,7 +332,7 @@ def list_employees(
 ) -> EmployeeListResult:
     """Zaměstnanci/obsluha provozovny. Osobní údaje jsou pseudonymizovány."""
     with _Session() as session:
-        data = _fetch(session, "employees", {"limit": _clamp_limit(limit), "page": max(1, page)})
+        data = _fetch(session, "employees", {"limit": _clamp_limit(limit), "page": max(1, page)}, person_names=True)
     return EmployeeListResult(data=data, provenance=_provenance("employees"), warnings=[])
 
 
@@ -329,11 +350,15 @@ def get_cloud_info() -> CloudInfoResult:
 # =============================================================================
 # Analytika — prodejní souhrn (spojení stránek objednávek + odvozené metriky)
 # =============================================================================
-def _num(value: Any, default: float = 0.0) -> float:
+def _num(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
         return default
+
+
+def _money(value: Decimal) -> float:
+    return float(value.quantize(Decimal("0.01")))
 
 
 def sales_summary(
@@ -345,13 +370,13 @@ def sales_summary(
     Projde účtenky v období (`created`, dny YYYY-MM-DD; bez zadání posledních 30
     dní), oddělí stornované, a spočítá: tržbu (nestornovaných), počet dokladů,
     průměrnou a mediánovou účtenku, rozpad podle typu dokladu, top 15 produktů
-    podle tržby a tržbu podle sazby DPH. U dlouhého období se stáhne max 5000
+    podle tržby a tržbu podle sazby DPH. U dlouhého období se stáhne max 500
     dokladů a výsledek se označí `truncated=True`. (Obdoba `analyze.py` z předlohy.)
     """
     if not date_from and not date_to:
-        now = datetime.now(timezone.utc)
-        date_to = _iso(now)[:10]
-        date_from = _iso(now - timedelta(days=30))[:10]
+        today = datetime.now(_configured_timezone()).date()
+        date_to = (today + timedelta(days=1)).isoformat()
+        date_from = (today - timedelta(days=29)).isoformat()
 
     with _Session() as session:
         orders, truncated = _collect_orders(session, date_from, date_to, include_items=True)
@@ -359,23 +384,25 @@ def sales_summary(
     valid = [o for o in orders if not o.get("canceledDate")]
     canceled = [o for o in orders if o.get("canceledDate")]
     values = sorted(_num(o.get("totalValueRounded")) for o in valid)
-    revenue = round(sum(values), 2)
+    revenue_decimal = sum(values, Decimal("0"))
+    revenue = _money(revenue_decimal)
     count_valid = len(valid)
 
-    def _median(xs: list[float]) -> float:
+    def _median(xs: list[Decimal]) -> float:
         m = len(xs)
         if not m:
             return 0.0
-        return xs[m // 2] if m % 2 else round((xs[m // 2 - 1] + xs[m // 2]) / 2, 2)
+        value = xs[m // 2] if m % 2 else (xs[m // 2 - 1] + xs[m // 2]) / 2
+        return _money(value)
 
     by_type: dict[str, int] = defaultdict(int)
     for o in orders:
         by_type[str(o.get("documentType", "?"))] += 1
 
-    prod_rev: dict[str, float] = defaultdict(float)
-    prod_qty: dict[str, float] = defaultdict(float)
-    vat_rev: dict[str, float] = defaultdict(float)
-    for o in orders:
+    prod_rev: dict[str, Decimal] = defaultdict(Decimal)
+    prod_qty: dict[str, Decimal] = defaultdict(Decimal)
+    vat_rev: dict[str, Decimal] = defaultdict(Decimal)
+    for o in valid:
         for it in o.get("orderItems", []) or []:
             if not isinstance(it, dict) or it.get("canceledDate"):
                 continue
@@ -386,7 +413,7 @@ def sales_summary(
             vat_rev[str(it.get("vat"))] += tot
 
     top_products = [
-        {"name": name, "revenue": round(rev, 2), "quantity": round(prod_qty[name], 3)}
+        {"name": name, "revenue": _money(rev), "quantity": float(prod_qty[name].quantize(Decimal("0.001")))}
         for name, rev in sorted(prod_rev.items(), key=lambda kv: -kv[1])[:15]
     ]
     currency = next((o.get("currency") for o in valid if o.get("currency")), None)
@@ -398,17 +425,17 @@ def sales_summary(
         "valid_count": count_valid,
         "canceled_count": len(canceled),
         "revenue": revenue,
-        "average_receipt": round(revenue / count_valid, 2) if count_valid else 0.0,
+        "average_receipt": _money(revenue_decimal / count_valid) if count_valid else 0.0,
         "median_receipt": _median(values),
-        "max_receipt": values[-1] if values else 0.0,
-        "min_receipt": values[0] if values else 0.0,
+        "max_receipt": _money(values[-1]) if values else 0.0,
+        "min_receipt": _money(values[0]) if values else 0.0,
         "by_document_type": dict(by_type),
         "top_products": top_products,
-        "vat": {k: round(v, 2) for k, v in sorted(vat_rev.items(), key=lambda kv: -kv[1])},
+        "vat": {k: _money(v) for k, v in sorted(vat_rev.items(), key=lambda kv: -kv[1])},
         "truncated": truncated,
     }
     warnings = (
-        ["Období obsahuje víc než 5000 dokladů — souhrn je z podmnožiny dat."]
+        [f"Období obsahuje víc než {_MAX_RECORDS} dokladů — souhrn je z podmnožiny dat."]
         if truncated
         else []
     )

@@ -23,6 +23,7 @@ jobs:
         with:
           repository: mcp-open/openmcp-sdk
           token: ${{ secrets.OPENMCP_CI_TOKEN }}
+          ref: f9df8dd48d2ae6f06dc3d3a6e5225039f00e1820
           path: sdk
       - name: Pytest (python kontajner)
         run: |
@@ -42,6 +43,7 @@ jobs:
         with:
           repository: mcp-open/openmcp-sdk
           token: ${{ secrets.OPENMCP_CI_TOKEN }}
+          ref: f9df8dd48d2ae6f06dc3d3a6e5225039f00e1820
           path: sdk
       - name: Build + push mcp-dotykacka
         run: |
