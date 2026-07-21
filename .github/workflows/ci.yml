@@ -1,4 +1,4 @@
-# CI+CD mcp-dotykacka: pytest → build (kontext dotykacka/ + sdk/, rovnaký tvar ako
+# CI+CD mcp-dotykacka: pytest → build (kontext dotykacka/ + sdk/, stejný tvar jako
 # platform/deploy/Makefile build-connector-dotykacka) → repository_dispatch
 # `component-built` do mcp-open/platforma (CD bumpne digest v 86-mcp-dotykacka.yaml
 # a nasadí). Org secret OPENMCP_CI_TOKEN = fine-grained PAT s contents:read na
@@ -63,11 +63,11 @@ jobs:
     needs: build
     runs-on: self-hosted
     steps:
-      - name: Dispatch deploy do platforma
+      - name: Dispatch deploy do platformy
         run: |
           curl -sf -X POST \
             -H "Authorization: token ${{ secrets.OPENMCP_CI_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/mcp-open/platforma/dispatches \
             -d '{"event_type":"component-built","client_payload":{"component":"mcp-dotykacka","digest":"${{ needs.build.outputs.digest }}"}}'
-          echo "deploy odovzdaný CD workflowu v platforma repe"
+          echo "deploy předaný CD workflowu v platforma repu"

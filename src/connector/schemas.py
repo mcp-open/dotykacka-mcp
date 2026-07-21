@@ -1,7 +1,7 @@
 """Pydantic modely pro `dotykacka` connector.
 
 Každý nástroj vrací model odvozený z `openmcp_sdk.envelope.EnvelopeBase`
-(`data` + `provenance` + `warnings`), takže odpověď vždy nese pôvod dat
+(`data` + `provenance` + `warnings`), takže odpověď vždy nese původ dat
 (Dotykačka API v2) a případná upozornění (např. useknutá agregace). Modely
 jsou tenké obálky nad surovou (po PII sanitizaci) odpovědí — doménové typy
 Dotykačky se úmyslně nekopírují 1:1, POS schéma je široké a proměnlivé.
