@@ -1,0 +1,83 @@
+slug: dotykacka
+name: Dotykačka
+version: 0.1.0
+category: pokladna
+summary: >
+  Čtecí přístup k pokladnímu systému Dotykačka / Dotypos (API v2) — účtenky
+  a objednávky, produkty, kategorie, sklady, zákazníci a odvozené prodejní
+  souhrny (tržby, průměrná účtenka, top produkty, rozpad podle DPH). Zákaznická
+  osobní data (jména, e-maily, telefony, adresy, IČO/DIČ) jsou před odpovědí
+  pseudonymizována na stabilní tokeny typu <EMAIL_3f9c1a2b4d5e>, takže do LLM
+  neproteče PII (GDPR).
+sdk_min_version: 0.3.0
+
+# Delegovaná OAuth autorizace: uživatel se přihlásí přímo u Dotykačky a schválí
+# přístup; platforma pak konektoru per-uživatele doručí refresh_token + cloud_id
+# (Vault: secret/data/users/{sub}/dotykacka). Konektor z nich přes /v2/signin/token
+# získává krátkodobé (~1 h) access tokeny — samotný client_secret ani surové
+# přihlašovací údaje uživatele konektor nikdy nevidí.
+auth:
+  type: oauth_delegated
+  provider: dotykacka
+  operator_fields:
+    - { key: client_id, label: "Client ID", type: string, required: true }
+    - { key: client_secret, label: "Client Secret", type: string, secret: true, required: true }
+  runtime_secrets: [refresh_token, cloud_id]
+
+# oauth_delegated: žádné per-uživatelské credentials v manifestu — refresh_token
+# a cloud_id jdou do konektoru z Vaultu přes runtime OAuth kontext, ne z env.
+credentials: []
+
+operator_config:
+  - key: anonymize_data
+    label: Pseudonymizovat osobní údaje
+    type: bool
+    default: true
+    hint: "Nahradí jména, e-maily, telefony a adresy zákazníků stabilními tokeny (<EMAIL_3f9c…>) dřív, než odpověď opustí konektor. Zapnuto (výchozí) kvůli GDPR — prodejní čísla, produkty a kategorie procházejí beze změny."
+  - key: read_only
+    label: Pouze čtení
+    type: bool
+    default: true
+    hint: "Zapnuto (výchozí) = konektor nabízí jen čtecí nástroje. Dotykačka konektor zápis vůbec neimplementuje, přepínač je tu jen pro konzistenci s platformou."
+
+capabilities:
+  default_read_only: true
+  supports_test: true
+  supports_write: false
+
+# display (manifest.display) — kurátorovaný veřejný manifest pro web detail.
+display:
+  capabilities:
+    - "Číst účtenky a objednávky, produkty, kategorie, sklady a zákazníky z pokladny Dotykačka"
+    - "Vracet odvozené prodejní souhrny — tržby, počty dokladů, průměrná účtenka, top produkty, rozpad podle DPH"
+    - "Použít výsledky přímo v konverzaci s AI"
+  permissions:
+    - "Pouze čtení (GET) přes Dotykačka API v2 — konektor nezapisuje ani nemaže data"
+    - "Přístup schvaluje sám uživatel přihlášením u Dotykačky (delegovaná OAuth autorizace); konektor dostane jen krátkodobý přístupový token k jednomu cloudu"
+  data_handling: "Osobní údaje zákazníků (jména, e-maily, telefony, adresy, IČO/DIČ) jsou před odesláním do LLM pseudonymizovány na stabilní tokeny (např. <EMAIL_3f9c1a2b4d5e>). Token je odvozen jednosměrně (HMAC z hodnoty a per-uživatelského klíče), nelze ho rozklíčovat zpět a nikde nevzniká re-identifikační mapa. Katalogová a prodejní data (produkty, ceny, tržby) se nepseudonymizují."
+  example_query: "Udělej mi souhrn tržeb za poslední měsíc — kolik dokladů, jaká tržba a co se prodávalo nejvíc."
+  tools:
+    - name: get_cloud_info
+      description: "Základní informace o cloudu (provozovně) Dotykačka"
+    - name: list_orders
+      description: "Seznam účtenek/objednávek s filtrem podle data a stránkováním"
+    - name: get_order
+      description: "Detail účtenky/objednávky podle ID, včetně položek"
+    - name: list_products
+      description: "Katalog produktů (název, cena, DPH, kategorie)"
+    - name: list_categories
+      description: "Kategorie produktů"
+    - name: list_warehouses
+      description: "Sklady provozovny"
+    - name: list_customers
+      description: "Zákazníci — osobní údaje jsou pseudonymizovány"
+    - name: list_employees
+      description: "Zaměstnanci/obsluha provozovny"
+    - name: sales_summary
+      description: "Souhrn prodejů za období — tržby, počty dokladů, průměrná účtenka, top produkty, rozpad podle DPH"
+
+egress:
+  host: "*.dotykacka.cz"
+  port: 443
+  path_prefix: /v2
+  methods: [GET, POST]
