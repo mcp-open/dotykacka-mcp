@@ -16,7 +16,6 @@ docstring `connectors/raynet-mcp/src/connector/server.py`.
 from __future__ import annotations
 
 import logging
-import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -36,7 +35,6 @@ from openmcp_sdk import (
 )
 from openmcp_sdk.http import SERVER_ERRORS_ONLY, UpstreamClient
 from openmcp_sdk.http import encode_segment as _seg
-from openmcp_sdk.logging import setup as _log_setup
 from openmcp_sdk.pii import Pseudonymizer, derive_key
 
 from connector.pii_fields import POLICY
@@ -52,7 +50,6 @@ from connector.schemas import (
     WarehouseListResult,
 )
 
-_log_setup(component=os.getenv("OPENMCP_COMPONENT", "mcp-dotykacka"))
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.dotykacka.cz/v2"
