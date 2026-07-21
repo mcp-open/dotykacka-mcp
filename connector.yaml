@@ -86,3 +86,14 @@ egress:
   port: 443
   path_prefix: /v2
   methods: [GET, POST]
+
+# runtime — provisioning kontrakt pre connector-operator (app-driven onboarding).
+# Deterministicky riadi tvar nasadeného manifestu (deploy/cluster/86-mcp-dotykacka.yaml):
+#   pii_salt    → inject OPENMCP_PII_SALT secret (GDPR pseudonymizácia)
+#   health_path → httpGet {path} readiness/liveness (SDK servíruje /healthz)
+#   vault_ttl   → env VAULT_TTL (s) — cache Vault tajomstiev; 5s kvôli reconnectu
+# seed-manifests ho ignoruje (číta len credentials/user_config/capabilities/display/auth).
+runtime:
+  pii_salt: true
+  health_path: /healthz
+  vault_ttl: 5
