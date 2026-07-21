@@ -1,0 +1,71 @@
+# CI+CD mcp-dotykacka: pytest → build (kontext dotykacka/ + sdk/, rovnaký tvar ako
+# platform/deploy/Makefile build-connector-dotykacka) → repository_dispatch
+# `component-built` do mcp-open/platforma (CD bumpne digest v 86-mcp-dotykacka.yaml
+# a nasadí). Org secret OPENMCP_CI_TOKEN = fine-grained PAT s contents:read na
+# openmcp-sdk (checkout) a contents:write na platforma (dispatch+bump).
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency: { group: ci-dotykacka, cancel-in-progress: false }
+
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: dotykacka }
+      - uses: actions/checkout@v4
+        with:
+          repository: mcp-open/openmcp-sdk
+          token: ${{ secrets.OPENMCP_CI_TOKEN }}
+          path: sdk
+      - name: Pytest (python kontajner)
+        run: |
+          docker run --rm -v "$PWD":/src -w /src python:3.13-slim sh -c \
+            "pip install -q --no-cache-dir ./sdk ./dotykacka pytest pytest-asyncio pyyaml && python -m pytest dotykacka/tests -q"
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: dotykacka }
+      - uses: actions/checkout@v4
+        with:
+          repository: mcp-open/openmcp-sdk
+          token: ${{ secrets.OPENMCP_CI_TOKEN }}
+          path: sdk
+      - name: Build + push mcp-dotykacka
+        run: |
+          SHA=${GITHUB_SHA::7}
+          docker build -q -f dotykacka/Dockerfile \
+            -t localhost:30500/openmcp/mcp-dotykacka:dev -t localhost:30500/openmcp/mcp-dotykacka:$SHA .
+          docker push -q localhost:30500/openmcp/mcp-dotykacka:$SHA
+          docker push -q localhost:30500/openmcp/mcp-dotykacka:dev
+      - name: Digest
+        id: digest
+        run: |
+          D=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:30500/openmcp/mcp-dotykacka:dev)
+          echo "digest=${D#*@}" >> "$GITHUB_OUTPUT"
+          echo "**mcp-dotykacka**: \`${D#*@}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - name: Dispatch deploy do platforma
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: token ${{ secrets.OPENMCP_CI_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/mcp-open/platforma/dispatches \
+            -d '{"event_type":"component-built","client_payload":{"component":"mcp-dotykacka","digest":"${{ needs.build.outputs.digest }}"}}'
+          echo "deploy odovzdaný CD workflowu v platforma repe"
