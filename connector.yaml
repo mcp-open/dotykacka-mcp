@@ -52,6 +52,7 @@ capabilities:
 
 # display (manifest.display) — kurátorovaný veřejný manifest pro web detail.
 display:
+  schema_version: 1
   capabilities:
     - "Číst účtenky a objednávky, produkty, kategorie, sklady a zákazníky z pokladny Dotykačka"
     - "Vracet odvozené prodejní souhrny — tržby, počty dokladů, průměrná účtenka, top produkty, rozpad podle DPH"
@@ -80,6 +81,57 @@ display:
       description: "Zaměstnanci/obsluha provozovny"
     - name: sales_summary
       description: "Souhrn prodejů za období — tržby, počty dokladů, průměrná účtenka, top produkty, rozpad podle DPH"
+  locales:
+    cs:
+      name: "Dotykačka"
+      description: "Čtecí propojení s pokladním systémem Dotykačka pro účtenky, objednávky, produkty, sklady, zákazníky a prodejní souhrny."
+      capabilities:
+        - "Číst účtenky, objednávky, produkty, kategorie, sklady a zákazníky"
+        - "Vytvořit prodejní souhrny — tržby, počet dokladů, průměrnou účtenku, top produkty a DPH"
+        - "Použít výsledky přímo v konverzaci s podporovaným AI klientem"
+      permissions:
+        - "Pouze čtení přes Dotykačka API v2 — konektor nezapisuje ani nemaže data"
+        - "Přístup schválíte přihlášením přímo u Dotykačky a můžete ho znovu odvolat"
+      data_handling: "Osobní údaje zákazníků a zaměstnanců se před odesláním do AI klienta pseudonymizují stabilními jednosměrnými tokeny. Prodejní a katalogová data zůstávají čitelná."
+      example_query: "Udělej souhrn tržeb za poslední měsíc: počet dokladů, celkovou tržbu, průměrnou účtenku a nejprodávanější produkty."
+      fields: []
+      tools:
+        - { name: get_cloud_info, description: "Základní informace o připojené provozovně Dotykačka" }
+        - { name: list_orders, description: "Seznam účtenek a objednávek s filtrem podle data a stránkováním" }
+        - { name: get_order, description: "Detail účtenky nebo objednávky včetně položek" }
+        - { name: list_products, description: "Katalog produktů s názvem, cenou, DPH a kategorií" }
+        - { name: list_categories, description: "Kategorie produktů" }
+        - { name: list_warehouses, description: "Sklady připojené provozovny" }
+        - { name: list_customers, description: "Zákazníci s pseudonymizovanými osobními údaji" }
+        - { name: list_employees, description: "Zaměstnanci a obsluha provozovny s chráněnými osobními údaji" }
+        - { name: sales_summary, description: "Souhrn prodejů za období — tržby, doklady, průměrná účtenka, top produkty a DPH" }
+      limitations:
+        - "Konektor je pouze pro čtení a nepodporuje změny produktů, objednávek ani pokladního nastavení."
+    sk:
+      name: "Dotykačka"
+      description: "Čítacie prepojenie s pokladničným systémom Dotykačka pre bločky, objednávky, produkty, sklady, zákazníkov a predajné súhrny."
+      capabilities:
+        - "Čítať bločky, objednávky, produkty, kategórie, sklady a zákazníkov"
+        - "Vytvoriť predajné súhrny — tržby, počet dokladov, priemerný bloček, top produkty a DPH"
+        - "Použiť výsledky priamo v konverzácii s podporovaným AI klientom"
+      permissions:
+        - "Iba čítanie cez Dotykačka API v2 — konektor nezapisuje ani nemaže údaje"
+        - "Prístup schválite prihlásením priamo pri Dotykačke a môžete ho znova odvolať"
+      data_handling: "Osobné údaje zákazníkov a zamestnancov sa pred odoslaním do AI klienta pseudonymizujú stabilnými jednosmernými tokenmi. Predajné a katalógové údaje zostávajú čitateľné."
+      example_query: "Urob súhrn tržieb za posledný mesiac: počet dokladov, celkovú tržbu, priemerný bloček a najpredávanejšie produkty."
+      fields: []
+      tools:
+        - { name: get_cloud_info, description: "Základné informácie o pripojenej prevádzke Dotykačka" }
+        - { name: list_orders, description: "Zoznam bločkov a objednávok s filtrom podľa dátumu a stránkovaním" }
+        - { name: get_order, description: "Detail bločku alebo objednávky vrátane položiek" }
+        - { name: list_products, description: "Katalóg produktov s názvom, cenou, DPH a kategóriou" }
+        - { name: list_categories, description: "Kategórie produktov" }
+        - { name: list_warehouses, description: "Sklady pripojenej prevádzky" }
+        - { name: list_customers, description: "Zákazníci s pseudonymizovanými osobnými údajmi" }
+        - { name: list_employees, description: "Zamestnanci a obsluha prevádzky s chránenými osobnými údajmi" }
+        - { name: sales_summary, description: "Súhrn predajov za obdobie — tržby, doklady, priemerný bloček, top produkty a DPH" }
+      limitations:
+        - "Konektor je iba na čítanie a nepodporuje zmeny produktov, objednávok ani pokladničného nastavenia."
 
 egress:
   host: "*.dotykacka.cz"
