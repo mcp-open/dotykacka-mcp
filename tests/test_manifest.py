@@ -14,7 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from openmcp_sdk.manifest import load_manifest
 
 MANIFEST_PATH = Path(__file__).resolve().parent.parent / "connector.yaml"
@@ -97,5 +96,5 @@ def test_display_tools_match_registered_tools() -> None:
     from connector import server
 
     declared = {t.name for t in _manifest().display.tools}
-    registered = set(asyncio.run(server.mcp.get_tools()))
+    registered = {tool.name for tool in asyncio.run(server.mcp.list_tools())}
     assert declared == registered

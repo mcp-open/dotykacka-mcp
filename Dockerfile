@@ -1,8 +1,8 @@
 # dotykacka-mcp — hostovaný konektor nad openmcp_sdk. Build context připravuje
 # platform/deploy/Makefile (analogicky build-connector-raynet): tar zabalí
 # dotykacka-mcp + openmcp-sdk z repos/konektory a přejmenuje je na
-# `dotykacka/` + `sdk/`. Tento Dockerfile se drží vzoru template/raynet 1:1.
-FROM python:3.13-slim
+# `dotykacka/` + `sdk/`. Digest je připnutý stejně jako release/canary image.
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
 
 WORKDIR /app
 
@@ -23,4 +23,5 @@ WORKDIR /app/dotykacka
 
 EXPOSE 8000
 
+# Kubernetes používá readiness/liveness probe z `runtime.health_path`.
 ENTRYPOINT ["python", "-m", "connector"]

@@ -1,0 +1,279 @@
+name: Distribution release candidate
+
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+
+concurrency:
+  group: distribution-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  SYFT_VERSION: v1.49.0
+  TRIVY_VERSION: v0.72.0
+  COSIGN_VERSION: v3.1.2
+
+jobs:
+  build-scan:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: ${{ github.workspace }}/sdk:${{ github.workspace }}/connector/src
+    steps:
+      - name: Checkout connector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: connector
+          persist-credentials: false
+
+      - name: Require main release identity
+        run: |
+          set -eu
+          [ "$GITHUB_REF" = "refs/heads/main" ] || {
+            echo "Distribution candidate may only run for refs/heads/main" >&2
+            exit 2
+          }
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: { python-version: "3.13.9" }
+
+      - name: Setup Node for pinned MCPB
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version: "22.17.1" }
+
+      - name: Verify and materialize exact SDK source
+        run: |
+          python connector/release/materialize_sdk.py \
+            --root connector --output sdk
+
+      - name: Install exact release and test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            -r connector/release/python-requirements.lock
+          npm ci --ignore-scripts --prefix connector/.github/mcpb-tools
+          mkdir -p connector/release/evidence
+          npm audit --audit-level=high --json \
+            --prefix connector/.github/mcpb-tools \
+            > connector/release/evidence/mcpb-npm-audit.json
+
+      - name: Source quality gate
+        working-directory: connector
+        run: |
+          python -m ruff check src tests
+          python -m mypy src
+          python -m pytest tests -q
+
+      - name: Render exact adapters
+        working-directory: connector
+        run: |
+          set -eu
+          adapter_dir="$RUNNER_TEMP/openmcp-adapters"
+          test ! -e "$adapter_dir"
+          python -m openmcp_sdk.cli validate connector.yaml
+          python -m openmcp_sdk.cli render-adapters \
+            connector.yaml distribution.yaml --output "$adapter_dir"
+          mkdir -p release/dist
+          MODE=$(python -c \
+            'from openmcp_sdk.distribution import load_distribution; print(load_distribution("distribution.yaml").mode)')
+          if [ "$MODE" = local ]; then
+            ARTIFACT=$(python -c \
+              'from openmcp_sdk.release_gate import load_gate; items=[x for x in load_gate("release-gate.yaml").artifacts if x.target=="claude_mcpb"]; assert len(items)==1; print(items[0].artifact)')
+            python -m openmcp_sdk.cli pack-mcpb \
+              "$adapter_dir/claude-mcpb" \
+              --mcpb-bin .github/mcpb-tools/node_modules/.bin/mcpb \
+              --output "$ARTIFACT"
+          else
+            cp -a "$adapter_dir/." release/dist/
+          fi
+          python -c 'from openmcp_sdk.release_gate import load_gate; g=load_gate("release-gate.yaml"); [print("\t".join((x.target,x.artifact,x.sbom,x.scan,x.contents_manifest,x.signature_bundle,x.provenance,x.provenance_bundle))) for x in g.artifacts]' \
+            > release/artifacts.tsv
+
+      - name: Install pinned Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+        with: { syft-version: "${{ env.SYFT_VERSION }}" }
+
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567
+        with:
+          version: "${{ env.TRIVY_VERSION }}"
+          cache: true
+
+      - name: Content SBOM, security scan and provenance
+        working-directory: connector
+        env:
+          BUILDER_ID: https://github.com/${{ github.repository }}/.github/workflows/distribution-release.yml@refs/heads/main
+          INVOCATION_ID: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          {
+            python --version
+            python -m openmcp_sdk.cli --help | head -n 1
+            .github/mcpb-tools/node_modules/.bin/mcpb --version
+            syft version
+            trivy --version
+            python -m pip freeze --all | LC_ALL=C sort
+          } > release/toolchain.lock
+
+          while IFS="$(printf '\t')" read -r target artifact sbom scan contents _signature provenance _provenance_signature; do
+            [ -n "$target" ] && [ -f "$artifact" ]
+            scan_root="$RUNNER_TEMP/openmcp-scan-$target"
+            payload_root="$scan_root/payload"
+            content_sbom="${contents%.json}.spdx.json"
+            raw_scan="$RUNNER_TEMP/$target.trivy.raw.json"
+            test ! -e "$scan_root"
+            mkdir -p "$payload_root" "$scan_root/build-inputs"
+
+            python -m openmcp_sdk.cli build-contents-manifest \
+              --artifact "$artifact" \
+              --artifact-name "$artifact" \
+              --build-input .sdk-ref=.sdk-ref \
+              --build-input release/python-requirements.lock=release/python-requirements.lock \
+              --output "$contents"
+            case "$target" in
+              claude_mcpb)
+                .github/mcpb-tools/node_modules/.bin/mcpb unpack \
+                  "$artifact" "$payload_root"
+                ;;
+              *)
+                case "$artifact" in
+                  *.zip)
+                    python -m zipfile -e "$artifact" "$payload_root"
+                    ;;
+                  *)
+                    cp "$artifact" "$payload_root/$(basename "$artifact")"
+                    ;;
+                esac
+                ;;
+            esac
+            cp release/python-requirements.lock \
+              "$scan_root/build-inputs/requirements.txt"
+
+            syft scan "$artifact" -o "spdx-json=$sbom"
+            syft scan "$scan_root" -o "spdx-json=$content_sbom"
+            trivy fs --scanners vuln,secret,misconfig --format json \
+              --output "$raw_scan" "$scan_root"
+            python -m openmcp_sdk.cli bind-trivy-report \
+              --report "$raw_scan" \
+              --artifact-name "$artifact" \
+              --contents-manifest "$contents" \
+              --required-target build-inputs/requirements.txt \
+              --output "$scan"
+            python -m openmcp_sdk.cli build-provenance \
+              --artifact "$artifact" \
+              --artifact-name "$artifact" \
+              --source-repository "https://github.com/${GITHUB_REPOSITORY}" \
+              --source-commit "$GITHUB_SHA" \
+              --builder-identity "$BUILDER_ID" \
+              --invocation-id "$INVOCATION_ID" \
+              --target "$target" \
+              --lock .sdk-ref=.sdk-ref \
+              --lock release/python-requirements.lock=release/python-requirements.lock \
+              --lock release/vendor/openmcp-sdk-502f59facbd0cd738826cf02608344ecdbb9112b.tar.gz=release/vendor/openmcp-sdk-502f59facbd0cd738826cf02608344ecdbb9112b.tar.gz \
+              --lock release/vendor/openmcp-sdk.sha256=release/vendor/openmcp-sdk.sha256 \
+              --lock release/high-approvals.yaml=release/high-approvals.yaml \
+              --lock release/toolchain.lock=release/toolchain.lock \
+              --lock release/evidence/mcpb-npm-audit.json=release/evidence/mcpb-npm-audit.json \
+              --lock "$contents=$contents" \
+              --lock "$content_sbom=$content_sbom" \
+              --lock "$sbom=$sbom" \
+              --lock "$scan=$scan" \
+              --output "$provenance"
+          done < release/artifacts.tsv
+
+      - name: Upload unsigned candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-distribution-${{ github.sha }}
+          path: |
+            connector/release/dist
+            connector/release/evidence
+            connector/release/artifacts.tsv
+            connector/release/toolchain.lock
+            connector/release/high-approvals.yaml
+            connector/release/python-requirements.lock
+            connector/release/vendor
+            connector/.sdk-ref
+            connector/connector.yaml
+            connector/distribution.yaml
+            connector/release-gate.yaml
+            sdk/openmcp_sdk
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  sign-verify:
+    needs: build-scan
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}/sdk
+    steps:
+      - name: Download unsigned candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: unsigned-distribution-${{ github.sha }}
+          path: .
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: { python-version: "3.13.9" }
+
+      - name: Install exact verifier dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            -r connector/release/python-requirements.lock
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with: { cosign-release: "${{ env.COSIGN_VERSION }}" }
+
+      - name: Keyless sign exact artifacts and provenance
+        working-directory: connector
+        run: |
+          set -eu
+          while IFS="$(printf '\t')" read -r target artifact _sbom _scan _contents signature provenance provenance_signature; do
+            [ -n "$target" ] && [ -f "$artifact" ] && [ -f "$provenance" ]
+            cosign sign-blob --yes --bundle "$signature" "$artifact"
+            cosign sign-blob --yes \
+              --bundle "$provenance_signature" "$provenance"
+          done < release/artifacts.tsv
+
+      - name: Enforce artifact gate and sign evidence
+        working-directory: connector
+        run: |
+          set -eu
+          python -m openmcp_sdk.cli verify-release release-gate.yaml \
+            --root . \
+            --source-commit "$GITHUB_SHA" \
+            --output release/release-evidence.json
+          cosign sign-blob --yes \
+            --bundle release/release-evidence.sigstore.json \
+            release/release-evidence.json
+
+      - name: Upload verified candidate only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-distribution-${{ github.sha }}
+          path: |
+            connector/release/dist
+            connector/release/evidence
+            connector/release/release-evidence.json
+            connector/release/release-evidence.sigstore.json
+            connector/release/artifacts.tsv
+            connector/release/toolchain.lock
+            connector/release/high-approvals.yaml
+            connector/release/python-requirements.lock
+            connector/release/vendor
+            connector/.sdk-ref
+            connector/connector.yaml
+            connector/distribution.yaml
+            connector/release-gate.yaml
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

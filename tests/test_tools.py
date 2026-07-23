@@ -89,8 +89,14 @@ def _ctx(monkeypatch, *, config=None, sub="u1", oauth=None, client=None):
 # Registrace a anotace
 # --------------------------------------------------------------------------- #
 EXPECTED_TOOLS = {
-    "get_cloud_info", "list_orders", "get_order", "list_products",
-    "list_categories", "list_warehouses", "list_customers", "list_employees",
+    "get_cloud_info",
+    "list_orders",
+    "get_order",
+    "list_products",
+    "list_categories",
+    "list_warehouses",
+    "list_customers",
+    "list_employees",
     "sales_summary",
 }
 
@@ -98,19 +104,23 @@ EXPECTED_TOOLS = {
 def test_all_tools_registered_and_read_only():
     import asyncio
 
-    tools = asyncio.run(server.mcp.get_tools())
-    assert set(tools) == EXPECTED_TOOLS
-    for name, tool in tools.items():
-        assert tool.annotations.readOnlyHint is True, name
+    tools = asyncio.run(server.mcp.list_tools())
+    assert {tool.name for tool in tools} == EXPECTED_TOOLS
+    for tool in tools:
+        assert tool.annotations.readOnlyHint is True, tool.name
 
 
 def test_no_write_or_delete_tools():
     import asyncio
 
-    tools = asyncio.run(server.mcp.get_tools())
-    assert not [n for n in tools if "delete" in n.lower() or "remove" in n.lower()]
+    tools = asyncio.run(server.mcp.list_tools())
+    assert not [
+        tool.name
+        for tool in tools
+        if "delete" in tool.name.lower() or "remove" in tool.name.lower()
+    ]
     # supports_write=false → žádný nástroj se zápisovou anotací.
-    assert all(t.annotations.readOnlyHint is True for t in tools.values())
+    assert all(tool.annotations.readOnlyHint is True for tool in tools)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,17 +159,15 @@ def test_list_orders_builds_date_filter(monkeypatch):
 
 def test_invalid_date_raises_invalid_input(monkeypatch):
     fake = _FakeClient({"orders": {"data": []}})
-    with _ctx(monkeypatch, client=fake):
-        with pytest.raises(ConnectorError) as exc:
-            server.list_orders(date_from="loni")
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.list_orders(date_from="loni")
     assert exc.value.code == ErrorCode.INVALID_INPUT
 
 
 def test_date_rejects_timestamp_instead_of_silently_truncating(monkeypatch):
     fake = _FakeClient({"orders": {"data": []}})
-    with _ctx(monkeypatch, client=fake):
-        with pytest.raises(ConnectorError) as exc:
-            server.list_orders(date_from="2026-01-01T12:00:00")
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.list_orders(date_from="2026-01-01T12:00:00")
     assert exc.value.code == ErrorCode.INVALID_INPUT
 
 
@@ -238,7 +246,12 @@ def test_sales_summary_aggregates(monkeypatch):
                 "totalValueRounded": 999,
                 "canceledDate": "2026-01-05",
                 "orderItems": [
-                    {"name": "Stornovaný produkt", "quantity": 1, "totalPriceWithVat": 999, "vat": 21}
+                    {
+                        "name": "Stornovaný produkt",
+                        "quantity": 1,
+                        "totalPriceWithVat": 999,
+                        "vat": 21,
+                    }
                 ],
             },
         ]
@@ -269,10 +282,15 @@ def test_sales_summary_defaults_to_last_30_days(monkeypatch):
 # Mapování chyb
 # --------------------------------------------------------------------------- #
 def test_upstream_error_maps_to_connector_error(monkeypatch):
-    fake = _FakeClient(error=ConnectorError(ErrorCode.UPSTREAM_ERROR, "upstream selhal se stavem 500", status=500))
-    with _ctx(monkeypatch, client=fake):
-        with pytest.raises(ConnectorError) as exc:
-            server.list_orders()
+    fake = _FakeClient(
+        error=ConnectorError(
+            ErrorCode.UPSTREAM_ERROR,
+            "upstream selhal se stavem 500",
+            status=500,
+        )
+    )
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.list_orders()
     assert exc.value.code == ErrorCode.UPSTREAM_ERROR
 
 
@@ -288,17 +306,42 @@ def test_test_connection_success(monkeypatch):
 
 
 def test_test_connection_401_maps_to_invalid_input(monkeypatch):
-    fake = _FakeClient(error=ConnectorError(ErrorCode.FORBIDDEN, "upstream odmítl přístupové údaje", status=401))
-    with _ctx(monkeypatch, client=fake):
-        with pytest.raises(ConnectorError) as exc:
-            server.test_connection()
+    fake = _FakeClient(
+        error=ConnectorError(
+            ErrorCode.FORBIDDEN,
+            "upstream odmítl přístupové údaje",
+            status=401,
+        )
+    )
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.test_connection()
     assert exc.value.code == ErrorCode.INVALID_INPUT
 
 
 def test_test_connection_5xx_maps_to_upstream_unavailable(monkeypatch):
-    fake = _FakeClient(error=ConnectorError(ErrorCode.UPSTREAM_ERROR, "upstream selhal se stavem 503", status=503))
-    with _ctx(monkeypatch, client=fake):
-        with pytest.raises(ConnectorError) as exc:
-            server.test_connection()
+    fake = _FakeClient(
+        error=ConnectorError(
+            ErrorCode.UPSTREAM_ERROR,
+            "upstream selhal se stavem 503",
+            status=503,
+        )
+    )
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.test_connection()
     assert exc.value.code == ErrorCode.UPSTREAM_UNAVAILABLE
     assert "503" not in exc.value.message
+
+
+def test_missing_delegated_oauth_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "current_context",
+        lambda: types.SimpleNamespace(
+            oauth=None,
+            config={},
+            principal=types.SimpleNamespace(sub="u1", email=None),
+        ),
+    )
+    with pytest.raises(ConnectorError) as exc:
+        server.list_orders()
+    assert exc.value.code == ErrorCode.INVALID_INPUT
