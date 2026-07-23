@@ -9,6 +9,7 @@
 | Vstup | Přesná identita |
 |---|---|
 | Connector branch | `codex/client-adapters-20260723` |
+| Connector implementation commit | `642b0f039f8ac5e0c405c8657cb42adc0e8f86e4` |
 | Connector version | `dotykacka` `0.1.0` |
 | OpenMCP SDK | `502f59facbd0cd738826cf02608344ecdbb9112b` |
 | SDK archive SHA-256 | `55b043b540eb7e1a50feb6fa41689084bb7ec95b2e0964931ac732d8e55e2096` |
@@ -42,6 +43,19 @@ Výsledný deterministický render:
 
 Render obsahuje devět namespaced read-only tools. Nevytváří MCPB, lokální
 executable, hook, working directory ani vložený review workspace/token.
+
+GitHub Actions workflow-dispatch nad přesným implementation commitem:
+
+| Důkaz | Výsledek |
+|---|---|
+| Workflow run | `30018983977` — `success` |
+| Test job | `89246421217` — `success` |
+| Build job | `89246657441` — očekávaně `skipped` na feature branch |
+| Deploy job | `89246658430` — očekávaně `skipped` na feature branch |
+
+Feature větev tedy ověřila zdroj, locky, vendored SDK, manifest, render a testy,
+ale nemohla vydat image ani změnit runtime. Build/deploy zůstávají vyhrazené
+pro push do `main`.
 
 ## Gemini CLI exact-surface ověření
 
