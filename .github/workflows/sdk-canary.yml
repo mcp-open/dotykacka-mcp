@@ -77,9 +77,17 @@ jobs:
         run: |
           set -eu
           expected="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sdk_dir="$RUNNER_TEMP/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           test "$SOURCE_DIR" = "$expected"
-          rm -rf -- "$SOURCE_DIR" "$expected.tar.gz" \
-            "$RUNNER_TEMP/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$sdk_dir" in "$RUNNER_TEMP"/openmcp-sdk-*) ;; *) exit 2 ;; esac
+          # The test container may create root-owned wheel build files inside
+          # the mounted SDK source. Remove only this validated per-run path in
+          # the same pinned container boundary, then clean runner-owned input.
+          docker run --rm -v "$RUNNER_TEMP":/runner-temp \
+            python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
+            sh -c 'rm -rf -- "$1"' cleanup \
+            "/runner-temp/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf -- "$SOURCE_DIR" "$expected.tar.gz"
       - if: steps.source.outcome == 'failure' || steps.run.outcome == 'failure'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
         with:
