@@ -23,7 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          path: "${{ env.SLUG }}"
           persist-credentials: false
       - id: run
         continue-on-error: true
@@ -32,20 +31,19 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD":/src -v "$RUNNER_TEMP":/runner-temp -w /src \
             python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
-            python "${SLUG}/release/materialize_sdk.py" \
-              --root "${SLUG}" --output "$sdk_dir"
+            python release/materialize_sdk.py --root . --output "$sdk_dir"
           docker run --rm -v "$PWD":/src -v "$RUNNER_TEMP":/runner-temp \
             -e SDK_DIR="$sdk_dir" -w /src \
             python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
             sh -c '
             set -eu
             pip install -q --no-cache-dir --only-binary=:all: \
-              --require-hashes -r "'"$SLUG"'/release/python-requirements.lock"
+              --require-hashes -r release/python-requirements.lock
             pip install -q --no-cache-dir --no-deps --no-build-isolation \
-              "$SDK_DIR" "./'"$SLUG"'"
+              "$SDK_DIR" .
             pip check
-            (cd '"$SLUG"' && openmcp-sdk validate connector.yaml)
-            python -m pytest '"$SLUG"'/tests -q
+            openmcp-sdk validate connector.yaml
+            python -m pytest tests -q
           '
       - if: steps.run.outcome == 'failure'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
