@@ -85,6 +85,8 @@ GitHub Actions workflow-dispatch nad přesným implementation commitem:
 
 | Důkaz | Výsledek |
 |---|---|
+| Hardening workflow run | `30136270788` — `success` nad `1080d32ee1491a7246c2d6ff9713103854c1800a` |
+| Hardening test job | `89620657990` — `success` |
 | Workflow run | `30018983977` — `success` |
 | Test job | `89246421217` — `success` |
 | Build job | `89246657441` — očekávaně `skipped` na feature branch |
