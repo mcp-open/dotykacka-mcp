@@ -164,8 +164,8 @@ def test_release_gate_paths_match_rendered_artifacts(tmp_path: Path):
     assert all(
         artifact.scan_targets
         == [
-            "build-inputs/runtime-requirements.txt",
-            "build-inputs/release-requirements.txt",
+            "build-inputs/runtime/requirements.txt",
+            "build-inputs/release/requirements.txt",
         ]
         and artifact.contents_manifest.endswith(".contents.json")
         and "release/runtime-requirements.in" in artifact.lockfiles

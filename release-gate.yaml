@@ -14,8 +14,8 @@ artifacts:
     scan: release/evidence/openai.trivy.json
     contents_manifest: release/evidence/openai.contents.json
     scan_targets:
-      - build-inputs/runtime-requirements.txt
-      - build-inputs/release-requirements.txt
+      - build-inputs/runtime/requirements.txt
+      - build-inputs/release/requirements.txt
     signature_bundle: release/evidence/openai.sigstore.json
     provenance: release/evidence/openai.provenance.json
     provenance_bundle: release/evidence/openai.provenance.sigstore.json
@@ -38,8 +38,8 @@ artifacts:
     scan: release/evidence/gemini.trivy.json
     contents_manifest: release/evidence/gemini.contents.json
     scan_targets:
-      - build-inputs/runtime-requirements.txt
-      - build-inputs/release-requirements.txt
+      - build-inputs/runtime/requirements.txt
+      - build-inputs/release/requirements.txt
     signature_bundle: release/evidence/gemini.sigstore.json
     provenance: release/evidence/gemini.provenance.json
     provenance_bundle: release/evidence/gemini.provenance.sigstore.json
