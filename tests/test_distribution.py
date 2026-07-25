@@ -162,8 +162,15 @@ def test_release_gate_paths_match_rendered_artifacts(tmp_path: Path):
     assert gate.trivy_version == "0.72.0"
     assert gate.high_approvers == []
     assert all(
-        artifact.scan_targets == ["build-inputs/requirements.txt"]
+        artifact.scan_targets
+        == [
+            "build-inputs/runtime-requirements.txt",
+            "build-inputs/release-requirements.txt",
+        ]
         and artifact.contents_manifest.endswith(".contents.json")
+        and "release/runtime-requirements.in" in artifact.lockfiles
+        and "release/python-requirements.in" in artifact.lockfiles
+        and "release/runtime-requirements.lock" in artifact.lockfiles
         and "release/python-requirements.lock" in artifact.lockfiles
         and "release/toolchain.lock" in artifact.lockfiles
         for artifact in gate.artifacts
@@ -224,17 +231,41 @@ def test_ci_and_release_use_reviewed_snapshot_and_main_only_mutations():
     assert "id-token: write" in release
     assert "persist-credentials: false" in release
     assert "OPENMCP_SDK_DEPLOY_KEY" not in release
+    assert "--require-hashes" in release
+
+    assert "--require-hashes" in ci
+    assert "--no-deps --no-build-isolation" in ci
+
+    canary = workflows["sdk-canary.yml"]
+    assert "--require-hashes" in canary
+    assert "--no-deps --no-build-isolation" in canary
 
 
 def test_dependency_and_container_inputs_are_pinned():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert (
-        "FROM python:3.13-slim@sha256:"
-        "6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
+        "FROM python:3.13-alpine@sha256:"
+        "399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
     ) in dockerfile
     assert (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip() == (
-        "502f59facbd0cd738826cf02608344ecdbb9112b"
+        "eedc35a7de7ca61c6823d89a5048f9eff98e78ff"
     )
+    assert "--require-hashes" in dockerfile
+    assert "--no-deps --no-build-isolation" in dockerfile
+
+    for relative in (
+        "release/runtime-requirements.lock",
+        "release/python-requirements.lock",
+    ):
+        requirements = (ROOT / relative).read_text(encoding="utf-8")
+        package_lines = [
+            line
+            for line in requirements.splitlines()
+            if line and not line.startswith(("#", " ", "-"))
+        ]
+        assert len(package_lines) >= 70
+        assert all(line.endswith(" \\") for line in package_lines), relative
+        assert requirements.count("--hash=sha256:") >= len(package_lines), relative
 
     lock = json.loads((ROOT / ".github/mcpb-tools/package-lock.json").read_text(encoding="utf-8"))
     assert lock["packages"]["node_modules/@anthropic-ai/mcpb"]["version"] == "2.1.2"

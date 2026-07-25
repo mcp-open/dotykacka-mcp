@@ -13,14 +13,19 @@ artifacts:
     sbom: release/evidence/openai.spdx.json
     scan: release/evidence/openai.trivy.json
     contents_manifest: release/evidence/openai.contents.json
-    scan_targets: [build-inputs/requirements.txt]
+    scan_targets:
+      - build-inputs/runtime-requirements.txt
+      - build-inputs/release-requirements.txt
     signature_bundle: release/evidence/openai.sigstore.json
     provenance: release/evidence/openai.provenance.json
     provenance_bundle: release/evidence/openai.provenance.sigstore.json
     lockfiles:
       - .sdk-ref
+      - release/runtime-requirements.in
+      - release/python-requirements.in
+      - release/runtime-requirements.lock
       - release/python-requirements.lock
-      - release/vendor/openmcp-sdk-502f59facbd0cd738826cf02608344ecdbb9112b.tar.gz
+      - release/vendor/openmcp-sdk-eedc35a7de7ca61c6823d89a5048f9eff98e78ff.tar.gz
       - release/vendor/openmcp-sdk.sha256
       - release/high-approvals.yaml
       - release/toolchain.lock
@@ -32,14 +37,19 @@ artifacts:
     sbom: release/evidence/gemini.spdx.json
     scan: release/evidence/gemini.trivy.json
     contents_manifest: release/evidence/gemini.contents.json
-    scan_targets: [build-inputs/requirements.txt]
+    scan_targets:
+      - build-inputs/runtime-requirements.txt
+      - build-inputs/release-requirements.txt
     signature_bundle: release/evidence/gemini.sigstore.json
     provenance: release/evidence/gemini.provenance.json
     provenance_bundle: release/evidence/gemini.provenance.sigstore.json
     lockfiles:
       - .sdk-ref
+      - release/runtime-requirements.in
+      - release/python-requirements.in
+      - release/runtime-requirements.lock
       - release/python-requirements.lock
-      - release/vendor/openmcp-sdk-502f59facbd0cd738826cf02608344ecdbb9112b.tar.gz
+      - release/vendor/openmcp-sdk-eedc35a7de7ca61c6823d89a5048f9eff98e78ff.tar.gz
       - release/vendor/openmcp-sdk.sha256
       - release/high-approvals.yaml
       - release/toolchain.lock

@@ -194,11 +194,11 @@ def test_customers_pseudonymized_by_default(monkeypatch):
     assert row["id"] == 7  # ne-PII pole projde
 
 
-def test_anonymize_false_passes_through(monkeypatch):
+def test_legacy_anonymize_false_cannot_disable_pii_boundary(monkeypatch):
     fake = _FakeClient({"customers": {"data": [{"email": "jan@example.cz"}]}})
     with _ctx(monkeypatch, config={"anonymize_data": False}, client=fake):
         result = server.list_customers()
-    assert result.data["data"][0]["email"] == "jan@example.cz"
+    assert result.data["data"][0]["email"].startswith("<EMAIL_")
 
 
 def test_product_names_not_tokenized(monkeypatch):

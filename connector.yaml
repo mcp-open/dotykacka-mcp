@@ -29,11 +29,6 @@ auth:
 credentials: []
 
 operator_config:
-  - key: anonymize_data
-    label: Pseudonymizovat osobní údaje
-    type: bool
-    default: true
-    hint: "Nahradí jména, e-maily, telefony a adresy zákazníků stabilními tokeny (<EMAIL_3f9c…>) dřív, než odpověď opustí konektor. Zapnuto (výchozí) kvůli GDPR — prodejní čísla, produkty a kategorie procházejí beze změny."
   - key: read_only
     label: Pouze čtení
     type: bool
@@ -60,7 +55,7 @@ display:
   permissions:
     - "Pouze čtení (GET) přes Dotykačka API v2 — konektor nezapisuje ani nemaže data"
     - "Přístup schvaluje sám uživatel přihlášením u Dotykačky (delegovaná OAuth autorizace); konektor dostane jen krátkodobý přístupový token k jednomu cloudu"
-  data_handling: "Osobní údaje zákazníků a zaměstnanců (jména, e-maily, telefony, adresy, IČO/DIČ) jsou před odesláním do LLM pseudonymizovány na stabilní tokeny (např. <EMAIL_3f9c1a2b4d5e>). Token je odvozen jednosměrně (HMAC z hodnoty a klíče izolovaného pro uživatele i konkrétní cloud), nelze ho rozklíčovat zpět a nikde nevzniká re-identifikační mapa. Katalogová a prodejní data (produkty, ceny, tržby) se nepseudonymizují."
+  data_handling: "Osobní údaje zákazníků a zaměstnanců (jména, e-maily, telefony, adresy, IČO/DIČ) jsou vždy před odesláním do LLM pseudonymizovány na stabilní tokeny (např. <EMAIL_3f9c1a2b4d5e>). Tuto ochranu nelze konfigurací vypnout. Token je odvozen jednosměrně (HMAC z hodnoty a klíče izolovaného pro uživatele i konkrétní cloud), nelze ho rozklíčovat zpět a nikde nevzniká re-identifikační mapa. Katalogová a prodejní data (produkty, ceny, tržby) se nepseudonymizují."
   example_query: "Udělej mi souhrn tržeb za poslední měsíc — kolik dokladů, jaká tržba a co se prodávalo nejvíc."
   tools:
     - name: get_cloud_info

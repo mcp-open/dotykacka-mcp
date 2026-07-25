@@ -63,10 +63,11 @@ def test_runtime_requires_pii_salt() -> None:
     assert _manifest().runtime.pii_salt is True
 
 
-def test_operator_config_has_gdpr_toggle() -> None:
+def test_operator_config_cannot_disable_pii_boundary() -> None:
     op = {f.key: f for f in _manifest().operator_config}
-    assert op["anonymize_data"].default is True
-    assert op["anonymize_data"].type == "bool"
+    assert "anonymize_data" not in op
+    assert set(op) == {"read_only", "timezone"}
+    assert "nelze konfigurací vypnout" in _manifest().display.data_handling
 
 
 def test_egress_allows_dotykacka_over_get_and_post() -> None:

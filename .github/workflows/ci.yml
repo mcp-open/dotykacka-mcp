@@ -46,7 +46,12 @@ jobs:
         run: |
           set -eu
           python -m pip install -q --disable-pip-version-check \
-            "${{ steps.sdk.outputs.path }}" "./${SLUG}[test]"
+            --only-binary=:all: --require-hashes \
+            -r "${SLUG}/release/python-requirements.lock"
+          python -m pip install -q --disable-pip-version-check \
+            --no-deps --no-build-isolation \
+            "${{ steps.sdk.outputs.path }}" "./${SLUG}"
+          python -m pip check
           python -m ruff check "${SLUG}/src" "${SLUG}/tests"
           python -m mypy "${SLUG}/src"
           # Validuje proti SDK schématu AJ invariantům platformy, takže
