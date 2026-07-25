@@ -21,18 +21,43 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
+      # The reusable runner workspace may contain a stale Git directory from
+      # an interrupted job. actions/checkout tries to clean auth after deleting
+      # that directory and then fails before the canary runs. Use an isolated,
+      # exact-commit GitHub source archive instead; no credential is persisted.
+      - id: source
+        name: Materialize exact connector source
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          source_dir="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          archive="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          mkdir -m 0700 "$source_dir"
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}" \
+            --output "$archive"
+          tar --extract --gzip --file "$archive" --directory "$source_dir" \
+            --strip-components=1 --no-same-owner
+          test -f "$source_dir/.sdk-ref"
+          test -f "$source_dir/release/materialize_sdk.py"
+          echo "path=$source_dir" >> "$GITHUB_OUTPUT"
       - id: run
+        if: steps.source.outcome == 'success'
         continue-on-error: true
         run: |
+          source_dir="${{ steps.source.outputs.path }}"
           sdk_dir="/runner-temp/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD":/src -v "$RUNNER_TEMP":/runner-temp -w /src \
+            -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp -w /src \
             python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
             python release/materialize_sdk.py --root . --output "$sdk_dir"
-          docker run --rm -v "$PWD":/src -v "$RUNNER_TEMP":/runner-temp \
+          docker run --rm -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp \
             -e SDK_DIR="$sdk_dir" -w /src \
             python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
             sh -c '
@@ -45,7 +70,17 @@ jobs:
             openmcp-sdk validate connector.yaml
             python -m pytest tests -q
           '
-      - if: steps.run.outcome == 'failure'
+      - name: Clean isolated canary inputs
+        if: always() && steps.source.outputs.path != ''
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.path }}
+        run: |
+          set -eu
+          expected="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$SOURCE_DIR" = "$expected"
+          rm -rf -- "$SOURCE_DIR" "$expected.tar.gz" \
+            "$RUNNER_TEMP/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - if: steps.source.outcome == 'failure' || steps.run.outcome == 'failure'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
         with:
           script: |
@@ -68,3 +103,6 @@ jobs:
                 title, body, labels: ['sdk-canary'],
               });
             }
+      - name: Fail the canary after reporting
+        if: steps.source.outcome == 'failure' || steps.run.outcome == 'failure'
+        run: exit 1
