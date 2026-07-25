@@ -126,7 +126,10 @@ jobs:
             content_sbom="${contents%.json}.spdx.json"
             raw_scan="$RUNNER_TEMP/$target.trivy.raw.json"
             test ! -e "$scan_root"
-            mkdir -p "$payload_root" "$scan_root/build-inputs"
+            mkdir -p \
+              "$payload_root" \
+              "$scan_root/build-inputs/runtime" \
+              "$scan_root/build-inputs/release"
 
             python -m openmcp_sdk.cli build-contents-manifest \
               --artifact "$artifact" \
@@ -154,9 +157,9 @@ jobs:
                 ;;
             esac
             cp release/runtime-requirements.lock \
-              "$scan_root/build-inputs/runtime-requirements.txt"
+              "$scan_root/build-inputs/runtime/requirements.txt"
             cp release/python-requirements.lock \
-              "$scan_root/build-inputs/release-requirements.txt"
+              "$scan_root/build-inputs/release/requirements.txt"
 
             syft scan "$artifact" -o "spdx-json=$sbom"
             syft scan "$scan_root" -o "spdx-json=$content_sbom"
@@ -166,8 +169,8 @@ jobs:
               --report "$raw_scan" \
               --artifact-name "$artifact" \
               --contents-manifest "$contents" \
-              --required-target build-inputs/runtime-requirements.txt \
-              --required-target build-inputs/release-requirements.txt \
+              --required-target build-inputs/runtime/requirements.txt \
+              --required-target build-inputs/release/requirements.txt \
               --output "$scan"
             python -m openmcp_sdk.cli build-provenance \
               --artifact "$artifact" \
