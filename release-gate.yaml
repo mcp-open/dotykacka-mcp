@@ -25,7 +25,7 @@ artifacts:
       - release/python-requirements.in
       - release/runtime-requirements.lock
       - release/python-requirements.lock
-      - release/vendor/openmcp-sdk-90bf7a9a7aa02260e9554109678d94b52efec054.tar.gz
+      - release/vendor/openmcp-sdk-d77b2b1b22e83d64a4fdf900f73c51c578b5f736.tar.gz
       - release/vendor/openmcp-sdk.sha256
       - release/high-approvals.yaml
       - release/toolchain.lock
@@ -49,7 +49,7 @@ artifacts:
       - release/python-requirements.in
       - release/runtime-requirements.lock
       - release/python-requirements.lock
-      - release/vendor/openmcp-sdk-90bf7a9a7aa02260e9554109678d94b52efec054.tar.gz
+      - release/vendor/openmcp-sdk-d77b2b1b22e83d64a4fdf900f73c51c578b5f736.tar.gz
       - release/vendor/openmcp-sdk.sha256
       - release/high-approvals.yaml
       - release/toolchain.lock
