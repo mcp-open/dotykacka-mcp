@@ -185,7 +185,7 @@ jobs:
               --lock release/python-requirements.in=release/python-requirements.in \
               --lock release/runtime-requirements.lock=release/runtime-requirements.lock \
               --lock release/python-requirements.lock=release/python-requirements.lock \
-              --lock release/vendor/openmcp-sdk-eedc35a7de7ca61c6823d89a5048f9eff98e78ff.tar.gz=release/vendor/openmcp-sdk-eedc35a7de7ca61c6823d89a5048f9eff98e78ff.tar.gz \
+              --lock release/vendor/openmcp-sdk-90bf7a9a7aa02260e9554109678d94b52efec054.tar.gz=release/vendor/openmcp-sdk-90bf7a9a7aa02260e9554109678d94b52efec054.tar.gz \
               --lock release/vendor/openmcp-sdk.sha256=release/vendor/openmcp-sdk.sha256 \
               --lock release/high-approvals.yaml=release/high-approvals.yaml \
               --lock release/toolchain.lock=release/toolchain.lock \

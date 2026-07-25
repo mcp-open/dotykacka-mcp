@@ -51,19 +51,25 @@ def test_openai_handoff_is_fail_closed_and_exact(tmp_path: Path):
     _, output = _render(tmp_path)
     submission = json.loads((output / "openai" / "submission.json").read_text(encoding="utf-8"))
 
-    assert submission["schema"] == "openmcp.openai-plugin-submission.v1"
+    assert submission["schema"] == "openmcp.openai-plugin-submission.v2"
     assert submission["artifact_kind"] == "operator_handoff"
     assert submission["installable"] is False
+    assert submission["submission_state"] == "blocked"
     assert submission["connector"] == {"slug": "dotykacka", "version": "0.1.0"}
-    assert submission["mcp_server_url"] == ("https://mcp.openmcp.cz/w/review-dotykacka/mcp")
-    assert submission["template_mcp_server_url"] == ("https://mcp.openmcp.cz/w/{workspace}/mcp")
+    assert submission["mcp_server_url"] is None
+    assert submission["workspace_mcp_server_url_template"] == (
+        "https://mcp.openmcp.cz/w/{workspace}/mcp"
+    )
     assert submission["authentication"] == {
         "type": "oauth2",
         "scopes": ["mcp"],
-        "protected_resource_metadata": (
-            "https://mcp.openmcp.cz/.well-known/oauth-protected-resource/w/review-dotykacka/mcp"
+        "protected_resource_metadata": None,
+        "protected_resource_metadata_template": (
+            "https://mcp.openmcp.cz/.well-known/"
+            "oauth-protected-resource/w/{workspace}/mcp"
         ),
     }
+    assert "privacy_policy" not in submission["publisher"]
     assert {tool["name"] for tool in submission["tools"]} == EXPECTED_TOOLS
     assert len(submission["tools"]) == 9
     for tool in submission["tools"]:
@@ -71,24 +77,26 @@ def test_openai_handoff_is_fail_closed_and_exact(tmp_path: Path):
         assert tool["annotations"] == {
             "readOnlyHint": True,
             "destructiveHint": False,
-            "openWorldHint": True,
+            "openWorldHint": False,
         }
         assert tool["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp"]}]
-    assert submission["review_requirements"] == {
-        "scan_tools": True,
-        "concrete_review_endpoint_required": True,
-        "external_demo_credentials_required": True,
-        "chatgpt_web_and_mobile_e2e_required": True,
-        "organization_verification_required": True,
-        "domain_verification_required": True,
-        "live_privacy_policy_required": True,
-        "breaking_tool_schema_changes_forbidden": True,
+    assert submission["submission_gates"] == {
+        "concrete_mcp_server_url": "missing",
+        "privacy_policy_url": "missing",
+        "scan_tools": "required",
+        "external_demo_credentials": "required",
+        "chatgpt_and_codex_surface_e2e": "required",
+        "organization_verification": "required",
+        "domain_verification": "required",
+        "breaking_tool_schema_changes": "forbidden",
     }
     encoded = json.dumps(submission)
     assert '"command"' not in encoded
     assert '"args"' not in encoded
     assert "refresh_token" not in encoded
     assert "client_secret" not in encoded
+    assert "review-dotykacka" not in encoded
+    assert "openmcp.cz/soukromi" not in encoded
 
 
 def test_gemini_bundle_is_remote_only_sensitive_and_exact(tmp_path: Path):
@@ -249,7 +257,7 @@ def test_dependency_and_container_inputs_are_pinned():
         "399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
     ) in dockerfile
     assert (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip() == (
-        "eedc35a7de7ca61c6823d89a5048f9eff98e78ff"
+        "90bf7a9a7aa02260e9554109678d94b52efec054"
     )
     assert "--require-hashes" in dockerfile
     assert "--no-deps --no-build-isolation" in dockerfile

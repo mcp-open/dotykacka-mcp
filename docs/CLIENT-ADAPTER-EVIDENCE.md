@@ -9,12 +9,14 @@
 | Vstup | Přesná identita |
 |---|---|
 | Connector main merge | `e2da5858be61c2f3906f598bb00c7a7286cf82c8` |
-| Connector implementation commit | `639545447a36a24d51f9d54c64a064396cf245c5` |
+| Current correction branch | `codex/openai-submission-contract-20260725` |
+| Runtime implementation commit | `639545447a36a24d51f9d54c64a064396cf245c5` |
 | Hostinger-only CI boundary | `df8af17f2ac34abc29b6d3d1d41ef07f6f95242d` |
 | Distribution scan target fix | `a7df1f51ad62af7449c43d473f18560f46ec4285` |
+| OpenAI handoff contract commit | `58780359b9e27f2900ed979f05f1fa6873928ebb` |
 | Connector version | `dotykacka` `0.1.0` |
-| OpenMCP SDK | `eedc35a7de7ca61c6823d89a5048f9eff98e78ff` |
-| SDK archive SHA-256 | `602bc73eb75cac3fc98fb3231249e3e32ef4ec7f17bb91734504aefe6c52f19a` |
+| OpenMCP SDK | `90bf7a9a7aa02260e9554109678d94b52efec054` |
+| SDK archive SHA-256 | `854e12d2167b0d15a49f432719be3af84a1c1513747062a645acebc7fadb624f` |
 | Template baseline | `34918795eed58a0d60928f318450b748689ce34d` |
 | Python | `3.13.9` |
 | FastMCP | `3.4.4` |
@@ -36,15 +38,16 @@ pytest tests -q                             PASS (44)
 render-adapters                             PASS
 ```
 
-Samotný SDK snapshot prošel `380 passed, 1 skipped`; skip je záměrný
-environment-dependent test. Connector nad přesně tímto snapshotem prošel
-`44 passed`.
+Samotný SDK snapshot prošel `382 passed, 1 skipped`; skip je záměrný
+environment-dependent test. Connector nad přesně tímto snapshotem v čistém
+Python `3.13.9` prostředí s 81 hash-locked balíčky prošel Ruff, MyPy,
+`pip check`, manifest validation, render a `44 passed`.
 
 Výsledný deterministický render:
 
 | Target | Cesta | SHA-256 |
 |---|---|---|
-| OpenAI operator handoff | `openai/submission.json` | `8f5084a1ecae1e197c1b0fbba34a7a43e575e4d92596aeb7f2d797cc5dd5505c` |
+| OpenAI operator handoff | `openai/submission.json` | `6e1007e9a30cbc5ff61e3bd23b7aeea7c68575fb87b16a9ec8c2f30e0bb40fe8` |
 | Gemini remote Extension | `openmcp-dotykacka-0.1.0-gemini.zip` | `b2f12179b7774efcdacab086308f0da3a92a000af3616284f2edd83e5ba18052` |
 
 Render obsahuje devět namespaced read-only tools. Nevytváří MCPB, lokální
@@ -188,25 +191,32 @@ Handoff je záměrně:
 ```text
 artifact_kind: operator_handoff
 installable: false
+submission_state: blocked
 authentication.scopes: [mcp]
 ```
 
-Obsahuje explicitní brány pro konkrétní review endpoint, scan tools, externí
-demo účet, web/mobile E2E, ověření organizace a domény, živou privacy policy a
-zákaz breaking tool-schema změn.
+Schéma v2 už nevyrábí fiktivní konkrétní review URL ani nepublikovanou privacy
+URL. `mcp_server_url` a protected-resource metadata jsou `null`, privacy pole
+je vynechané a oba gate jsou explicitně `missing`. Template zůstává pouze
+interním návrhem. Všech devět nástrojů má pravdivé anotace
+`readOnlyHint=true`, `destructiveHint=false`, `openWorldHint=false`.
+
+Obsahuje explicitní brány pro provisionovaný konkrétní endpoint, scan tools,
+externí demo účet, ChatGPT/Codex surface E2E, ověření organizace a domény,
+živou privacy policy a zákaz breaking tool-schema změn.
 
 Read-only kontrola veřejného development prostředí:
 
 | Kontrola | Výsledek |
 |---|---|
-| Protected resource metadata pro review URL | HTTP 200; resource odpovídá přesné workspace URL |
+| Protected resource metadata template | deterministický exact workspace template; nejde o review důkaz |
 | Authorization server metadata | HTTP 200; issuer `https://openmcp.cz` |
 | Scope | přesně `mcp` v PRM i AS metadata |
 | PKCE | pouze `S256` |
 | Token auth | public client metoda `none` |
 | Grants | authorization code + refresh token |
-| Konkrétní review MCP endpoint | **HTTP 404 — blokuje submission** |
-| Privacy policy `https://openmcp.cz/soukromi` | **HTTP 404 — blokuje submission** |
+| Konkrétní review MCP endpoint | **není provisionovaný; gate `missing`, žádný placeholder** |
+| Privacy policy | **není právně schválená/publikovaná; gate `missing`, žádný 404 odkaz** |
 
 Původní SDK kandidát nesprávně vyžadoval OIDC `offline_access`, zatímco
 schválený OpenMCP kontrakt i živý authorization server používají externě pouze
@@ -240,11 +250,11 @@ Do splnění těchto bodů nesmí web ani release registry změnit stav na
 
 ## Autoritativní externí požadavky
 
-- OpenAI Apps SDK authentication:
-  <https://developers.openai.com/apps-sdk/build/auth#mcp-authorization-spec-requirements>
-- OpenAI app/plugin submission:
-  <https://developers.openai.com/apps-sdk/deploy/submission>
-- OpenAI plugin domain verification:
-  <https://learn.chatgpt.com/docs/submit-plugins#domain-verification>
+- OpenAI plugin submission:
+  <https://developers.openai.com/plugins/deploy/submission>
+- OpenAI MCP server review:
+  <https://developers.openai.com/plugins/deploy/app-review>
+- OpenAI remote MCP:
+  <https://developers.openai.com/api/docs/guides/tools-connectors-mcp>
 - Gemini CLI Extensions:
   <https://geminicli.com/docs/extensions/>
