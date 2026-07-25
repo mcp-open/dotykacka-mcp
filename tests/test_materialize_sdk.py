@@ -48,6 +48,15 @@ def test_materializes_the_repository_bound_snapshot(tmp_path: Path):
     assert ref == (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip()
     assert (output / "pyproject.toml").is_file()
     assert (output / "openmcp_sdk" / "cli.py").is_file()
+    http_transport = (
+        output / "openmcp_sdk" / "transport" / "http.py"
+    ).read_text(encoding="utf-8")
+    distribution = (output / "openmcp_sdk" / "distribution.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stateless_http=True" in http_transport
+    assert '"schema": "openmcp.openai-plugin-submission.v2"' in distribution
+    assert '"openWorldHint": False' in distribution
     assert not any(path.is_symlink() for path in output.rglob("*"))
 
 
