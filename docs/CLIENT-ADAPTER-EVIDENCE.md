@@ -8,8 +8,10 @@
 
 | Vstup | Přesná identita |
 |---|---|
-| Connector branch | `codex/client-adapters-20260723` |
+| Connector main merge | `e2da5858be61c2f3906f598bb00c7a7286cf82c8` |
 | Connector implementation commit | `639545447a36a24d51f9d54c64a064396cf245c5` |
+| Hostinger-only CI boundary | `df8af17f2ac34abc29b6d3d1d41ef07f6f95242d` |
+| Distribution scan target fix | `a7df1f51ad62af7449c43d473f18560f46ec4285` |
 | Connector version | `dotykacka` `0.1.0` |
 | OpenMCP SDK | `eedc35a7de7ca61c6823d89a5048f9eff98e78ff` |
 | SDK archive SHA-256 | `602bc73eb75cac3fc98fb3231249e3e32ef4ec7f17bb91734504aefe6c52f19a` |
@@ -97,6 +99,54 @@ ale nemohla vydat image ani změnit runtime. Následný CI hardening odstranil i
 budoucí self-hosted build a cross-repository deploy dispatch z `main`: GitHub
 workflow pouze testuje. Hostinger development build, scan, deploy a hosted E2E
 smí proběhnout jen přes schválenou přímou SSH Manager release cestu.
+
+Sloučení do `main` proběhlo přes dva reviewované pull requesty:
+
+| Důkaz | Výsledek |
+|---|---|
+| PR #1 — runtime a adaptéry | `merged`; merge `db5fa538b2ca24a6b1240d7afc8c83c6ea52dcae` |
+| PR #1 CI | run `30139212926`, job `89629141581` — `success` |
+| PR #2 — rozpoznatelné Trivy dependency targety | `merged`; merge `e2da5858be61c2f3906f598bb00c7a7286cf82c8` |
+| PR #2 CI | run `30139360633` — `success`, `44 passed` |
+| Main CI | run `30139395398` — `success`, job `89629613271` |
+
+První main distribution run `30139263385` byl správně odmítnut, protože Trivy
+neidentifikovalo dependency soubory pod nestandardními názvy. Release gate se
+tedy nezměkčila: build vstupy se přesunuly na
+`build-inputs/runtime/requirements.txt` a
+`build-inputs/release/requirements.txt`, aby je scanner analyzoval jako Python
+dependency targety.
+
+## Přesný podepsaný distribution kandidát
+
+Main-only distribution run `30139395399` nad commitem
+`e2da5858be61c2f3906f598bb00c7a7286cf82c8` skončil `success`:
+
+| Kontrola | Výsledek |
+|---|---|
+| Build a scan job | `89629613214` — `success` |
+| Sign a verify job | `89629769943` — `success` |
+| Source quality | Ruff, mypy, manifest, render a `44 passed` |
+| Dependency scan targety | release i runtime `requirements.txt` rozpoznány jako `pip` |
+| Trivy | 0 zranitelností a 0 secrets v obou targetech |
+| Provenance | commit, repository a main workflow identity svázány a ověřeny |
+| Podpis | artifact i provenance mají ověřený keyless Cosign bundle |
+| Release gate | `eligible` pro interního kandidáta |
+
+Stažený GitHub Actions artifact
+`verified-distribution-e2da5858be61c2f3906f598bb00c7a7286cf82c8`
+byl znovu porovnán s release evidence. SHA-256 sedí přesně:
+
+| Target | SHA-256 |
+|---|---|
+| Gemini ZIP | `b2f12179b7774efcdacab086308f0da3a92a000af3616284f2edd83e5ba18052` |
+| OpenAI operator handoff | `8f5084a1ecae1e197c1b0fbba34a7a43e575e4d92596aeb7f2d797cc5dd5505c` |
+
+GitHub repository má zapnuté immutable releases. Přesný Gemini artifact,
+checksums, SBOM, Trivy report, provenance a Sigstore bundles jsou přiložené k
+draft/prerelease `v0.1.0-adapters-rc.1`, který cílí na uvedený main commit.
+Draft je záměrně interní a ještě není immutable publikovaný release ani
+zákaznický install. OpenAI handoff není vydaný jako veřejný asset.
 
 ## Gemini CLI exact-surface ověření
 
