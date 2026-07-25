@@ -96,7 +96,10 @@ schválený ani zákaznicky instalovatelný.
 `distribution-release.yml` je main-only interní candidate pipeline. Používá
 checksum-bound SDK snapshot, přesné dependency locky, content manifest, SBOM,
 Trivy scan, keyless Cosign podpis, provenance a fail-closed release gate.
-Feature branch nikdy nespustí self-hosted build ani deploy.
+GitHub CI pouze testuje zdroj a renderované adaptéry; neobsahuje self-hosted
+build, cluster credential ani deploy dispatch. Hostinger development image se
+buildí, skenuje, nasazuje a ověřuje pouze schválenou přímou SSH Manager release
+cestou a přesný výsledek se zapisuje do platform evidence.
 
 Hosted transport je explicitně bezstavový, takže requesty bezpečně procházejí
 přes více replik bez session affinity. Runtime image používá digest-pinned

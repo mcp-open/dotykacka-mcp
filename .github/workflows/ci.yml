@@ -1,8 +1,7 @@
-# CI+CD konektoru: test → build → deploy (repository_dispatch `component-built`
-# do mcp-open/platforma, kde CD bumpne digest v manifestu a nasadí).
-#
-# Org secret OPENMCP_CI_TOKEN = fine-grained PAT s contents:write pouze pro
-# deploy dispatch do platforma. Ve test/build jobu ani checkoutu se nevystavuje.
+# Connector CI validates source and rendered adapters only. Hostinger is a
+# direct development environment: image build, scan, deployment and hosted E2E
+# are performed through the approved SSH Manager release path and recorded in
+# platform evidence. This workflow must never dispatch a cluster deployment.
 name: CI
 
 on:
@@ -14,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  SLUG: dotykacka # jediné místo se slugem v tomto souboru
+  SLUG: dotykacka
 
 concurrency: { group: "ci-${{ github.repository }}", cancel-in-progress: false }
 
@@ -31,9 +30,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: { python-version: "3.13.9" }
 
-      # Repository-scoped GITHUB_TOKEN nesmí být nahrazen dlouhodobým
-      # cross-repository credentialem. Archiv je kryptograficky navázaný na
-      # reviewovatelný .sdk-ref a stejný vstup používá release pipeline.
+      # Repository-scoped GITHUB_TOKEN must not be replaced with a persistent
+      # cross-repository credential. The archive is bound to the reviewed
+      # .sdk-ref and the distribution workflow consumes the same input.
       - name: Verify and materialize exact SDK source
         id: sdk
         run: |
@@ -42,7 +41,7 @@ jobs:
             --root "${SLUG}" --output "$sdk_dir"
           echo "path=$sdk_dir" >> "$GITHUB_OUTPUT"
 
-      - name: Lint, typecheck, manifest a testy
+      - name: Lint, typecheck, manifest and tests
         run: |
           set -eu
           python -m pip install -q --disable-pip-version-check \
@@ -54,99 +53,8 @@ jobs:
           python -m pip check
           python -m ruff check "${SLUG}/src" "${SLUG}/tests"
           python -m mypy "${SLUG}/src"
-          # Validuje proti SDK schématu AJ invariantům platformy, takže
-          # "prošlo" znamená "platforma to přijme".
           (cd "$SLUG" && openmcp-sdk validate connector.yaml)
           ADAPTER_DIR=$(mktemp -d)
           (cd "$SLUG" && openmcp-sdk render-adapters \
             connector.yaml distribution.yaml --output "$ADAPTER_DIR/rendered")
           (cd "$SLUG" && python -m pytest tests -q)
-
-  build:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: self-hosted
-    timeout-minutes: 45
-    outputs: { digest: "${{ steps.digest.outputs.digest }}" }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          path: "${{ env.SLUG }}"
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: { python-version: "3.13.9" }
-
-      - name: Prepare isolated build context with exact SDK source
-        id: context
-        run: |
-          build_context="${RUNNER_TEMP}/openmcp-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$build_context/${SLUG}"
-          git -C "${SLUG}" archive HEAD | tar -x -C "$build_context/${SLUG}"
-          cp "${SLUG}/.dockerignore" "$build_context/.dockerignore"
-          python "${SLUG}/release/materialize_sdk.py" \
-            --root "${SLUG}" --output "$build_context/sdk"
-          echo "path=$build_context" >> "$GITHUB_OUTPUT"
-
-      - name: Build candidate
-        run: |
-          set -eu
-          SHA=${GITHUB_SHA::7}
-          IMG=localhost:30500/openmcp/mcp-${SLUG}
-          docker build -q \
-            -f "${{ steps.context.outputs.path }}/${SLUG}/Dockerfile" \
-            -t "$IMG:$SHA" "${{ steps.context.outputs.path }}"
-
-      # Kontejner musí opravdu naběhnout. Chytí špatný WORKDIR, chybějící
-      # connector.yaml v image i manifest, který shodí start — tedy přesně to,
-      # co jinak praskne až při rolloutu.
-      - name: Smoke test image
-        run: |
-          set -eu
-          SHA=${GITHUB_SHA::7}
-          IMG=localhost:30500/openmcp/mcp-${SLUG}
-          SMOKE="smoke-${SLUG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          trap 'docker rm -f "$SMOKE" >/dev/null 2>&1 || true' EXIT
-          TOKEN=$(head -c 48 /dev/urandom | base64 | tr -d '\n')
-          docker run -d --name "$SMOKE" -p 127.0.0.1::8000 \
-            -e OPENMCP_MODE=hosted \
-            -e OPENMCP_INTERNAL_TOKEN="$TOKEN" \
-            -e OPENMCP_PII_SALT=ci-smoke \
-            -e VAULT_ADDR=http://127.0.0.1:8200 \
-            "$IMG:$SHA"
-          PORT=$(docker port "$SMOKE" 8000/tcp | sed 's/.*://')
-          for _ in $(seq 30); do
-            curl -sf "127.0.0.1:$PORT/healthz" && break || sleep 1
-          done
-          curl -sf "127.0.0.1:$PORT/healthz" || {
-            docker logs "$SMOKE"; exit 1;
-          }
-
-      - name: Push verified image
-        run: |
-          set -eu
-          SHA=${GITHUB_SHA::7}
-          IMG=localhost:30500/openmcp/mcp-${SLUG}
-          docker tag "$IMG:$SHA" "$IMG:dev"
-          docker push -q "$IMG:$SHA"
-          docker push -q "$IMG:dev"
-
-      - id: digest
-        run: |
-          D=$(docker inspect --format='{{index .RepoDigests 0}}' \
-                "localhost:30500/openmcp/mcp-${SLUG}:dev")
-          echo "digest=${D#*@}" >> "$GITHUB_OUTPUT"
-          echo "**mcp-${SLUG}**: \`${D#*@}\`" >> "$GITHUB_STEP_SUMMARY"
-
-  deploy:
-    needs: build
-    runs-on: self-hosted
-    timeout-minutes: 15
-    steps:
-      - name: Dispatch deploy do platforma
-        run: |
-          curl -sf -X POST \
-            -H "Authorization: token ${{ secrets.OPENMCP_CI_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/mcp-open/platforma/dispatches \
-            -d "{\"event_type\":\"component-built\",\"client_payload\":{\"component\":\"mcp-${SLUG}\",\"digest\":\"${{ needs.build.outputs.digest }}\"}}"

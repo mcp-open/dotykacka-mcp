@@ -93,8 +93,10 @@ GitHub Actions workflow-dispatch nad přesným implementation commitem:
 | Deploy job | `89246658430` — očekávaně `skipped` na feature branch |
 
 Feature větev tedy ověřila zdroj, locky, vendored SDK, manifest, render a testy,
-ale nemohla vydat image ani změnit runtime. Build/deploy zůstávají vyhrazené
-pro push do `main`.
+ale nemohla vydat image ani změnit runtime. Následný CI hardening odstranil i
+budoucí self-hosted build a cross-repository deploy dispatch z `main`: GitHub
+workflow pouze testuje. Hostinger development build, scan, deploy a hosted E2E
+smí proběhnout jen přes schválenou přímou SSH Manager release cestu.
 
 ## Gemini CLI exact-surface ověření
 

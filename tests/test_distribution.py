@@ -208,10 +208,11 @@ def test_ci_and_release_use_reviewed_snapshot_and_main_only_mutations():
             assert "release/materialize_sdk.py" in workflow, name
 
     ci = workflows["ci.yml"]
-    assert "github.event_name == 'push'" in ci
-    assert "github.ref == 'refs/heads/main'" in ci
     assert "SLUG: dotykacka" in ci
-    assert 'cp "${SLUG}/.dockerignore" "$build_context/.dockerignore"' in ci
+    assert "runs-on: self-hosted" not in ci
+    assert "component-built" not in ci
+    assert "OPENMCP_CI_TOKEN" not in ci
+    assert re.search(r"^\s{2}(?:build|deploy):\s*$", ci, re.MULTILINE) is None
 
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     for required in (
