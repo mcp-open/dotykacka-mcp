@@ -1,6 +1,6 @@
 # Dotykačka client adapters — interní release evidence
 
-> Datum ověření: 23. 7. 2026
+> Datum ověření: 25. 7. 2026
 > Stav: interní kandidát; žádný veřejný install nebo success claim
 > Rozsah: Gemini CLI remote Extension a OpenAI/ChatGPT remote MCP handoff
 
@@ -9,10 +9,10 @@
 | Vstup | Přesná identita |
 |---|---|
 | Connector branch | `codex/client-adapters-20260723` |
-| Connector implementation commit | `642b0f039f8ac5e0c405c8657cb42adc0e8f86e4` |
+| Connector implementation commit | `639545447a36a24d51f9d54c64a064396cf245c5` |
 | Connector version | `dotykacka` `0.1.0` |
-| OpenMCP SDK | `502f59facbd0cd738826cf02608344ecdbb9112b` |
-| SDK archive SHA-256 | `55b043b540eb7e1a50feb6fa41689084bb7ec95b2e0964931ac732d8e55e2096` |
+| OpenMCP SDK | `eedc35a7de7ca61c6823d89a5048f9eff98e78ff` |
+| SDK archive SHA-256 | `602bc73eb75cac3fc98fb3231249e3e32ef4ec7f17bb91734504aefe6c52f19a` |
 | Template baseline | `34918795eed58a0d60928f318450b748689ce34d` |
 | Python | `3.13.9` |
 | FastMCP | `3.4.4` |
@@ -34,6 +34,10 @@ pytest tests -q                             PASS (44)
 render-adapters                             PASS
 ```
 
+Samotný SDK snapshot prošel `380 passed, 1 skipped`; skip je záměrný
+environment-dependent test. Connector nad přesně tímto snapshotem prošel
+`44 passed`.
+
 Výsledný deterministický render:
 
 | Target | Cesta | SHA-256 |
@@ -43,6 +47,39 @@ Výsledný deterministický render:
 
 Render obsahuje devět namespaced read-only tools. Nevytváří MCPB, lokální
 executable, hook, working directory ani vložený review workspace/token.
+
+## Hosted runtime a credential-backed E2E
+
+Předchozí FastMCP 3 konfigurace používala výchozí stateful Streamable HTTP.
+Session byla pouze v paměti procesu, zatímco Kubernetes Service rozdělovala
+požadavky mezi dvě repliky bez affinity. Následný request proto mohl na jiném
+podu skončit HTTP 404. SDK nyní explicitně používá `stateless_http=True`, což
+odpovídá gateway kontraktu: gateway dělá nový upstream handshake pro každý
+tool call.
+
+Nasazený development runtime:
+
+| Kontrola | Výsledek |
+|---|---|
+| Image | `localhost:30500/openmcp/mcp-dotykacka@sha256:9bb9d60a07977baed6d2ab262e3b5e0c80d1254507acc50dfb3be39097509310` |
+| Base | `python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0` |
+| Trivy image scan | 0 HIGH, 0 CRITICAL, 0 secrets |
+| Dependency integrity | hash-locked install + `pip check` PASS |
+| Rollout | 2/2 ready, 0 restartů |
+| Health | `/healthz` PASS |
+| Load-balanced MCP | 20× initialize → initialized → tools/list, oba pody zasaženy, 0 HTTP 404 |
+| Tool contract | přesně 9 očekávaných read-only tools |
+| Provider E2E | reálná publikovaná credential verze; `get_cloud_info` + `list_customers` PASS |
+| Privacy assertion | 0 raw e-mailů, 0 OAuth/client secrets v odpovědích |
+
+Při auditu byl zároveň odstraněn operátorský přepínač, který mohl vypnout
+pseudonymizaci. Starší konfigurace s hodnotou `false` je nyní ignorována
+fail-closed. OAuth klient, `cloud_id`, odvozený PII klíč i provenance se
+snapshotují v jedné session, aby se během provider callu nemíchal kontext.
+
+Tento důkaz potvrzuje hostovaný connector runtime a jeho skutečné provider
+volání. Nenahrazuje ještě reálný Gemini CLI ani ChatGPT klientský OAuth/tool
+E2E uvedený v otevřených branách níže.
 
 GitHub Actions workflow-dispatch nad přesným implementation commitem:
 

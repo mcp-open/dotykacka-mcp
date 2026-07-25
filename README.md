@@ -98,6 +98,11 @@ checksum-bound SDK snapshot, přesné dependency locky, content manifest, SBOM,
 Trivy scan, keyless Cosign podpis, provenance a fail-closed release gate.
 Feature branch nikdy nespustí self-hosted build ani deploy.
 
+Hosted transport je explicitně bezstavový, takže requesty bezpečně procházejí
+přes více replik bez session affinity. Runtime image používá digest-pinned
+Alpine base; release scan musí mít nula HIGH/CRITICAL nálezů a nula secrets.
+Pseudonymizaci osobních údajů nelze operátorskou konfigurací vypnout.
+
 Veřejné CTA a platformová release eligibility se povolí až po clean-client
 E2E a zápisu konkrétních per-platform důkazů do platformového release registru.
 
