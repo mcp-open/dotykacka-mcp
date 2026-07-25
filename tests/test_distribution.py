@@ -241,6 +241,13 @@ def test_ci_and_release_use_reviewed_snapshot_and_main_only_mutations():
     assert "persist-credentials: false" in release
     assert "OPENMCP_SDK_DEPLOY_KEY" not in release
     assert "--require-hashes" in release
+    assert "sdk_ref=$(cat .sdk-ref)" in release
+    assert 'sdk_archive="release/vendor/openmcp-sdk-${sdk_ref}.tar.gz"' in release
+    assert '--lock "$sdk_archive=$sdk_archive"' in release
+    assert not re.search(
+        r"--lock release/vendor/openmcp-sdk-[0-9a-f]{40}\.tar\.gz=",
+        release,
+    )
 
     assert "--require-hashes" in ci
     assert "--no-deps --no-build-isolation" in ci
