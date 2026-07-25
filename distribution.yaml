@@ -1,0 +1,31 @@
+# Klientské distribuční adaptéry pro vzdálený Dotykačka connector.
+# Tento soubor není runtime manifest ani veřejný install surface.
+schema_version: 1
+mode: remote
+display_name: OpenMCP Dotykačka
+description: >
+  Vzdálené read-only propojení pokladního systému Dotykačka s podporovaným
+  AI klientem přes konkrétní OpenMCP pracovní prostor. Účtenky, produkty,
+  sklady a prodejní souhrny zůstávají čitelné; osobní údaje zákazníků a
+  zaměstnanců se před odpovědí pseudonymizují.
+license: Apache-2.0
+
+publisher:
+  name: OpenMCP
+  homepage: https://openmcp.cz
+  support: https://github.com/mcp-open/dotykacka-mcp/issues
+  documentation: https://github.com/mcp-open/dotykacka-mcp
+  # URL je cílový veřejný kontrakt. Dokud A-07 nedodá schválený text a živá
+  # kontrola nepotvrdí stránku, OpenAI handoff zůstává installable=false.
+  privacy_policy: https://openmcp.cz/soukromi
+  repository: https://github.com/mcp-open/dotykacka-mcp
+
+remote:
+  # Review endpoint musí před skutečným OpenAI submission existovat, obsahovat
+  # jen tento release a projít externím OAuth E2E. Název zde rezervuje přesný
+  # kandidátní kontrakt; není důkazem, že workspace už byl provisionovaný.
+  mcp_server_url: https://mcp.openmcp.cz/w/review-dotykacka/mcp
+  template_mcp_server_url: https://mcp.openmcp.cz/w/{workspace}/mcp
+  oauth_scopes: [mcp]
+  adapters: [openai, gemini]
+  timeout_ms: 600000

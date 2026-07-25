@@ -1,73 +1,60 @@
-# CI+CD mcp-dotykacka: pytest → build (kontext dotykacka/ + sdk/, stejný tvar jako
-# platform/deploy/Makefile build-connector-dotykacka) → repository_dispatch
-# `component-built` do mcp-open/platforma (CD bumpne digest v 86-mcp-dotykacka.yaml
-# a nasadí). Org secret OPENMCP_CI_TOKEN = fine-grained PAT s contents:read na
-# openmcp-sdk (checkout) a contents:write na platforma (dispatch+bump).
+# Connector CI validates source and rendered adapters only. Hostinger is a
+# direct development environment: image build, scan, deployment and hosted E2E
+# are performed through the approved SSH Manager release path and recorded in
+# platform evidence. This workflow must never dispatch a cluster deployment.
 name: CI
+
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
   workflow_dispatch:
 
-concurrency: { group: ci-dotykacka, cancel-in-progress: false }
+permissions:
+  contents: read
+
+env:
+  SLUG: dotykacka
+
+concurrency: { group: "ci-${{ github.repository }}", cancel-in-progress: false }
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with: { path: dotykacka }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
-          ref: f9df8dd48d2ae6f06dc3d3a6e5225039f00e1820
-          path: sdk
-      - name: Pytest (python kontajner)
-        run: |
-          docker run --rm -v "$PWD":/src -w /src python:3.13-slim sh -c \
-            "pip install -q --no-cache-dir ./sdk ./dotykacka pytest pytest-asyncio pyyaml && python -m pytest dotykacka/tests -q"
+          path: "${{ env.SLUG }}"
+          persist-credentials: false
 
-  build:
-    needs: test
-    if: github.event_name != 'pull_request'
-    runs-on: self-hosted
-    outputs:
-      digest: ${{ steps.digest.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-        with: { path: dotykacka }
-      - uses: actions/checkout@v4
-        with:
-          repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
-          ref: f9df8dd48d2ae6f06dc3d3a6e5225039f00e1820
-          path: sdk
-      - name: Build + push mcp-dotykacka
-        run: |
-          SHA=${GITHUB_SHA::7}
-          docker build -q -f dotykacka/Dockerfile \
-            -t localhost:30500/openmcp/mcp-dotykacka:dev -t localhost:30500/openmcp/mcp-dotykacka:$SHA .
-          docker push -q localhost:30500/openmcp/mcp-dotykacka:$SHA
-          docker push -q localhost:30500/openmcp/mcp-dotykacka:dev
-      - name: Digest
-        id: digest
-        run: |
-          D=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:30500/openmcp/mcp-dotykacka:dev)
-          echo "digest=${D#*@}" >> "$GITHUB_OUTPUT"
-          echo "**mcp-dotykacka**: \`${D#*@}\`" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: { python-version: "3.13.9" }
 
-  deploy:
-    needs: build
-    runs-on: self-hosted
-    steps:
-      - name: Dispatch deploy do platformy
+      # Repository-scoped GITHUB_TOKEN must not be replaced with a persistent
+      # cross-repository credential. The archive is bound to the reviewed
+      # .sdk-ref and the distribution workflow consumes the same input.
+      - name: Verify and materialize exact SDK source
+        id: sdk
         run: |
-          curl -sf -X POST \
-            -H "Authorization: token ${{ secrets.OPENMCP_CI_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/mcp-open/platforma/dispatches \
-            -d '{"event_type":"component-built","client_payload":{"component":"mcp-dotykacka","digest":"${{ needs.build.outputs.digest }}"}}'
-          echo "deploy předaný CD workflowu v platforma repu"
+          sdk_dir="${RUNNER_TEMP}/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python "${SLUG}/release/materialize_sdk.py" \
+            --root "${SLUG}" --output "$sdk_dir"
+          echo "path=$sdk_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Lint, typecheck, manifest and tests
+        run: |
+          set -eu
+          python -m pip install -q --disable-pip-version-check \
+            --only-binary=:all: --require-hashes \
+            -r "${SLUG}/release/python-requirements.lock"
+          python -m pip install -q --disable-pip-version-check \
+            --no-deps --no-build-isolation \
+            "${{ steps.sdk.outputs.path }}" "./${SLUG}"
+          python -m pip check
+          python -m ruff check "${SLUG}/src" "${SLUG}/tests"
+          python -m mypy "${SLUG}/src"
+          (cd "$SLUG" && openmcp-sdk validate connector.yaml)
+          ADAPTER_DIR=$(mktemp -d)
+          (cd "$SLUG" && openmcp-sdk render-adapters \
+            connector.yaml distribution.yaml --output "$ADAPTER_DIR/rendered")
+          (cd "$SLUG" && python -m pytest tests -q)

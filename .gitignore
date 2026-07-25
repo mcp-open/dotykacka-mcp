@@ -6,15 +6,26 @@
 __pycache__/
 *.pyc
 .venv/
+venv/
 *.egg-info/
+build/
+dist/
+release/dist/
+release/evidence/
+release/release-evidence.json
+release/release-evidence.sigstore.json
+release/release-withdrawal.json
+release/release-withdrawal.sigstore.json
+release/artifacts.tsv
+release/toolchain.lock
 
 # Tool cache
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.github/mcpb-tools/node_modules/
 
 # Editor / OS
 .DS_Store
 .idea/
 .vscode/
-build/

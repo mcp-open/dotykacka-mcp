@@ -17,17 +17,16 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import Field
-
 from openmcp_sdk import (
     ConnectorError,
+    DelegatedOAuthClient,
     ErrorCode,
     Provenance,
     current_context,
@@ -36,6 +35,7 @@ from openmcp_sdk import (
 from openmcp_sdk.http import SERVER_ERRORS_ONLY, UpstreamClient
 from openmcp_sdk.http import encode_segment as _seg
 from openmcp_sdk.pii import Pseudonymizer, derive_key
+from pydantic import Field
 
 from connector.pii_fields import POLICY
 from connector.schemas import (
@@ -78,7 +78,11 @@ mcp: FastMCP = FastMCP(
 
 
 # --- Sdílené popisy parametrů (Annotated[…, Field]) — LLM je vidí ve schématu. ---
-_D_LIMIT = Field(description="Počet záznamů na stránku (max 100, víc se ořízne).", ge=1, le=_MAX_LIMIT)
+_D_LIMIT = Field(
+    description="Počet záznamů na stránku (max 100, víc se ořízne).",
+    ge=1,
+    le=_MAX_LIMIT,
+)
 _D_PAGE = Field(description="Číslo stránky (1 = od začátku).", ge=1)
 _D_DATE_FROM = Field(description="Začátek období, den YYYY-MM-DD (včetně).")
 _D_DATE_TO = Field(description="Konec období, den YYYY-MM-DD (exkluzivně).")
@@ -90,9 +94,15 @@ def _clamp_limit(limit: int) -> int:
     return min(limit, _MAX_LIMIT)
 
 
-def _oauth() -> Any:
-    """Runtime OAuth klient z aktuálního request kontextu (SDK ho plní)."""
-    return current_context().oauth
+def _oauth() -> DelegatedOAuthClient:
+    """Vrať povinný runtime OAuth klient nebo bezpečně odmítni volání."""
+    oauth = current_context().oauth
+    if oauth is None:
+        raise ConnectorError(
+            ErrorCode.INVALID_INPUT,
+            "Chybí platná autorizace Dotykačky",
+        )
+    return oauth
 
 
 def _iso(dt: datetime) -> str:
@@ -119,7 +129,11 @@ def _day(value: str, label: str) -> datetime:
         raise ConnectorError(
             ErrorCode.INVALID_INPUT, f"{label} musí být datum ve formátu YYYY-MM-DD."
         ) from exc
-    return datetime.combine(parsed, datetime.min.time(), tzinfo=_configured_timezone()).astimezone(timezone.utc)
+    return datetime.combine(
+        parsed,
+        datetime.min.time(),
+        tzinfo=_configured_timezone(),
+    ).astimezone(UTC)
 
 
 class _Session:
@@ -132,32 +146,27 @@ class _Session:
 
     def __init__(self) -> None:
         ctx = current_context()
+        oauth = _oauth()
+        self.cloud_id = str(oauth.cloud_id)
         # `ctx.oauth` splňuje `openmcp_sdk.http.TokenProvider` (access_token() +
         # invalidate()) — `UpstreamClient` samo obnoví token jednou při 401.
         self.client = UpstreamClient(
-            base_url=BASE_URL, token_provider=ctx.oauth, retry=SERVER_ERRORS_ONLY
+            base_url=BASE_URL, token_provider=oauth, retry=SERVER_ERRORS_ONLY
         )
-        self.anonymize = bool(ctx.config.get("anonymize_data", True))
-        self.pseudo: Pseudonymizer | None = None
-        if self.anonymize:
-            # Cloud je skutečný datový tenant. Jeden uživatel může přepojit jiný
-            # cloud; jeho tokeny pak nesmí být korelovatelné s předchozím cloudem.
-            # `derive_key(sub, cloud_id)` dá bit-identické bajty jako dřívější
-            # ruční `derive_key(f"{sub}:{cloud_id}")`.
-            self.pseudo = Pseudonymizer(
-                derive_key(ctx.principal.sub, ctx.oauth.cloud_id), POLICY
-            )
+        # Pseudonymizace je povinná bezpečnostní hranice, ne provozní přepínač.
+        # Cloud je skutečný datový tenant. Jeden uživatel může přepojit jiný
+        # cloud; jeho tokeny pak nesmí být korelovatelné s předchozím cloudem.
+        self.pseudo = Pseudonymizer(
+            derive_key(ctx.principal.sub, self.cloud_id),
+            POLICY,
+        )
 
     def sanitize(self, data: Any, *, person_names: bool = False) -> Any:
-        return (
-            self.pseudo.sanitize(data, person_scope=person_names)
-            if self.pseudo is not None
-            else data
-        )
+        return self.pseudo.sanitize(data, person_scope=person_names)
 
     def cloud_get(self, resource: str, params: dict[str, Any] | None = None) -> Any:
         """GET zdroje v rámci cloudu: `/clouds/{cloud_id}/{resource}`."""
-        cloud = self.client.seg(current_context().oauth.cloud_id)
+        cloud = self.client.seg(self.cloud_id)
         path = f"/clouds/{cloud}/{resource}" if resource else f"/clouds/{cloud}"
         return self.client.get_json(path, params)
 
@@ -165,22 +174,21 @@ class _Session:
         """Detail cloudu (provozovny): `/clouds/{cloud_id}`."""
         return self.cloud_get("")
 
+    def provenance(self, resource: str) -> Provenance:
+        """Provenance svázaná se stejným OAuth/cloud snapshotem jako HTTP call."""
+        cloud = self.client.seg(self.cloud_id)
+        return Provenance(
+            source_id="dotykacka",
+            source_url=f"{BASE_URL}/clouds/{cloud}/{resource}".rstrip("/"),
+            retrieved_at=now_utc_iso(),
+            freshness="live",
+        )
+
     def __enter__(self) -> _Session:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.client.close()
-
-
-def _provenance(resource: str) -> Provenance:
-    """Provenance záznam pro envelope nástroje."""
-    cloud = str(current_context().oauth.cloud_id)
-    return Provenance(
-        source_id="dotykacka",
-        source_url=f"{BASE_URL}/clouds/{cloud}/{resource}".rstrip("/"),
-        retrieved_at=now_utc_iso(),
-        freshness="live",
-    )
 
 
 def _fetch(
@@ -287,7 +295,8 @@ def list_orders(
         params["include"] = "orderItems,moneyLogs"
     with _Session() as session:
         data = _fetch(session, "orders", params)
-    return OrderListResult(data=data, provenance=_provenance("orders"), warnings=[])
+        provenance = session.provenance("orders")
+    return OrderListResult(data=data, provenance=provenance, warnings=[])
 
 
 def get_order(
@@ -300,7 +309,8 @@ def get_order(
     params = {"include": "orderItems,moneyLogs"} if include_items else None
     with _Session() as session:
         data = _fetch(session, f"orders/{_seg(order_id)}", params)
-    return OrderDetailResult(data=data, provenance=_provenance("orders"), warnings=[])
+        provenance = session.provenance("orders")
+    return OrderDetailResult(data=data, provenance=provenance, warnings=[])
 
 
 # =============================================================================
@@ -313,7 +323,8 @@ def list_products(
     """Katalog produktů (název, cena, DPH, kategorie). Bez osobních dat."""
     with _Session() as session:
         data = _fetch(session, "products", {"limit": _clamp_limit(limit), "page": max(1, page)})
-    return ProductListResult(data=data, provenance=_provenance("products"), warnings=[])
+        provenance = session.provenance("products")
+    return ProductListResult(data=data, provenance=provenance, warnings=[])
 
 
 def list_categories(
@@ -323,7 +334,8 @@ def list_categories(
     """Kategorie produktů. Bez osobních dat."""
     with _Session() as session:
         data = _fetch(session, "categories", {"limit": _clamp_limit(limit), "page": max(1, page)})
-    return CategoryListResult(data=data, provenance=_provenance("categories"), warnings=[])
+        provenance = session.provenance("categories")
+    return CategoryListResult(data=data, provenance=provenance, warnings=[])
 
 
 def list_warehouses(
@@ -333,7 +345,8 @@ def list_warehouses(
     """Sklady provozovny. Bez osobních dat."""
     with _Session() as session:
         data = _fetch(session, "warehouses", {"limit": _clamp_limit(limit), "page": max(1, page)})
-    return WarehouseListResult(data=data, provenance=_provenance("warehouses"), warnings=[])
+        provenance = session.provenance("warehouses")
+    return WarehouseListResult(data=data, provenance=provenance, warnings=[])
 
 
 def list_customers(
@@ -346,8 +359,14 @@ def list_customers(
     nedají se rozklíčovat zpět.
     """
     with _Session() as session:
-        data = _fetch(session, "customers", {"limit": _clamp_limit(limit), "page": max(1, page)}, person_names=True)
-    return CustomerListResult(data=data, provenance=_provenance("customers"), warnings=[])
+        data = _fetch(
+            session,
+            "customers",
+            {"limit": _clamp_limit(limit), "page": max(1, page)},
+            person_names=True,
+        )
+        provenance = session.provenance("customers")
+    return CustomerListResult(data=data, provenance=provenance, warnings=[])
 
 
 def list_employees(
@@ -356,15 +375,22 @@ def list_employees(
 ) -> EmployeeListResult:
     """Zaměstnanci/obsluha provozovny. Osobní údaje jsou pseudonymizovány."""
     with _Session() as session:
-        data = _fetch(session, "employees", {"limit": _clamp_limit(limit), "page": max(1, page)}, person_names=True)
-    return EmployeeListResult(data=data, provenance=_provenance("employees"), warnings=[])
+        data = _fetch(
+            session,
+            "employees",
+            {"limit": _clamp_limit(limit), "page": max(1, page)},
+            person_names=True,
+        )
+        provenance = session.provenance("employees")
+    return EmployeeListResult(data=data, provenance=provenance, warnings=[])
 
 
 def get_cloud_info() -> CloudInfoResult:
     """Základní informace o cloudu (provozovně), pro který je konektor propojen."""
     with _Session() as session:
         data = session.sanitize(session.get_cloud())
-    return CloudInfoResult(data=data, provenance=_provenance(""), warnings=[])
+        provenance = session.provenance("")
+    return CloudInfoResult(data=data, provenance=provenance, warnings=[])
 
 
 # =============================================================================
@@ -400,6 +426,7 @@ def sales_summary(
 
     with _Session() as session:
         orders, truncated = _collect_orders(session, date_from, date_to, include_items=True)
+        provenance = session.provenance("orders")
 
     valid = [o for o in orders if not o.get("canceledDate")]
     canceled = [o for o in orders if o.get("canceledDate")]
@@ -433,7 +460,11 @@ def sales_summary(
             vat_rev[str(it.get("vat"))] += tot
 
     top_products = [
-        {"name": name, "revenue": _money(rev), "quantity": float(prod_qty[name].quantize(Decimal("0.001")))}
+        {
+            "name": name,
+            "revenue": _money(rev),
+            "quantity": float(prod_qty[name].quantize(Decimal("0.001"))),
+        }
         for name, rev in sorted(prod_rev.items(), key=lambda kv: -kv[1])[:15]
     ]
     currency = next((o.get("currency") for o in valid if o.get("currency")), None)
@@ -460,7 +491,9 @@ def sales_summary(
         else []
     )
     return SalesSummaryResult(
-        data=summary, provenance=_provenance("orders"), warnings=warnings
+        data=summary,
+        provenance=provenance,
+        warnings=warnings,
     )
 
 
@@ -477,14 +510,20 @@ def test_connection() -> str:
     UPSTREAM_UNAVAILABLE. Klientovi se nikdy nevrací syrový text výjimky.
     """
     try:
-        client = UpstreamClient(base_url=BASE_URL, token_provider=_oauth(), retry=SERVER_ERRORS_ONLY)
+        oauth = _oauth()
+        client = UpstreamClient(
+            base_url=BASE_URL,
+            token_provider=oauth,
+            retry=SERVER_ERRORS_ONLY,
+        )
     except (ConnectorError, AttributeError, KeyError) as exc:
         raise ConnectorError(
-            ErrorCode.INVALID_INPUT, "Chybí platná autorizace Dotykačky"
+            ErrorCode.INVALID_INPUT,
+            "Chybí platná autorizace Dotykačky",
         ) from exc
 
     try:
-        client.get_json(f"/clouds/{client.seg(current_context().oauth.cloud_id)}")
+        client.get_json(f"/clouds/{client.seg(oauth.cloud_id)}")
     except ConnectorError as exc:
         if exc.status in (401, 403):
             raise ConnectorError(
@@ -498,7 +537,7 @@ def test_connection() -> str:
     finally:
         client.close()
 
-    return f"Připojeno k cloudu {current_context().oauth.cloud_id}"
+    return f"Připojeno k cloudu {oauth.cloud_id}"
 
 
 # =============================================================================
