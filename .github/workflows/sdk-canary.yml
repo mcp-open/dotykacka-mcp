@@ -57,15 +57,20 @@ jobs:
             -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp -w /src \
             python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
             python release/materialize_sdk.py --root . --output "$sdk_dir"
-          docker run --rm -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp \
+          docker run --rm -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp:ro \
             -e SDK_DIR="$sdk_dir" -w /src \
             python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
             sh -c '
             set -eu
+            work_dir="$(mktemp -d)"
+            trap '\''rm -rf -- "$work_dir"'\'' EXIT
+            cp -a /src "$work_dir/connector"
+            cp -a "$SDK_DIR" "$work_dir/sdk"
+            cd "$work_dir/connector"
             pip install -q --no-cache-dir --only-binary=:all: \
               --require-hashes -r release/python-requirements.lock
             pip install -q --no-cache-dir --no-deps --no-build-isolation \
-              "$SDK_DIR" .
+              "$work_dir/sdk" .
             pip check
             openmcp-sdk validate connector.yaml
             python -m pytest tests -q
