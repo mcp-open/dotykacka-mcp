@@ -8,7 +8,7 @@ description: >
   AI klientem přes konkrétní OpenMCP pracovní prostor. Účtenky, produkty,
   sklady a prodejní souhrny zůstávají čitelné; osobní údaje zákazníků a
   zaměstnanců se před odpovědí pseudonymizují.
-license: Apache-2.0
+license: MIT
 
 publisher:
   name: OpenMCP

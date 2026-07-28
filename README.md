@@ -117,3 +117,13 @@ E2E a zápisu konkrétních per-platform důkazů do platformového release regi
 
 Aktuální interní validační výsledky a otevřené externí brány jsou v
 [`docs/CLIENT-ADAPTER-EVIDENCE.md`](docs/CLIENT-ADAPTER-EVIDENCE.md).
+
+## Přispívání a bezpečnost
+
+- Postup a nároky na změny: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Hlášení zranitelností: [SECURITY.md](SECURITY.md) — nikdy ne přes veřejné issue
+- Historie změn: [CHANGELOG.md](CHANGELOG.md)
+
+## Licence
+
+MIT — viz [LICENSE](LICENSE).
