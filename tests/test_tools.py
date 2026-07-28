@@ -318,6 +318,26 @@ def test_test_connection_401_maps_to_invalid_input(monkeypatch):
     assert exc.value.code == ErrorCode.INVALID_INPUT
 
 
+@pytest.mark.parametrize("status", [400, 403, 404, 410])
+def test_test_connection_other_client_errors_map_to_invalid_input(monkeypatch, status):
+    """`/clouds/{cloud_id}` nese jen uložené `cloud_id` — 4xx = vadné propojení.
+
+    404 znamená, že cloud pod tímto propojením neexistuje (přepojený nebo
+    zrušený účet). Jako UPSTREAM_UNAVAILABLE to platforma četla jako dočasný
+    výpadek a credentials nechala označené jako zdravé.
+    """
+    fake = _FakeClient(
+        error=ConnectorError(
+            ErrorCode.INVALID_INPUT,
+            f"upstream odmítl {status}",
+            status=status,
+        )
+    )
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.test_connection()
+    assert exc.value.code == ErrorCode.INVALID_INPUT
+
+
 def test_test_connection_5xx_maps_to_upstream_unavailable(monkeypatch):
     fake = _FakeClient(
         error=ConnectorError(

@@ -505,8 +505,12 @@ def test_connection() -> str:
 
     Lehký GET `/clouds/{cloud_id}` (bez PII sanitizace ani envelope). Chyby se
     klasifikují strukturovaně přes `ConnectorError.status`, ne parsováním
-    textu: 401/403 (vypršelá/odvolaná autorizace) → INVALID_INPUT (uživatel to
-    může opravit novým propojením), cokoli jiného (timeout, 5xx, rate limit) →
+    textu. Cesta obsahuje jediný parametr — `cloud_id` z uloženého propojení —
+    takže každá 4xx mluví o autorizaci, ne o vstupu uživatele: 401/403
+    vypršelá nebo odvolaná autorizace, 404/410 cloud pod tímto propojením
+    neexistuje (přepojený nebo zrušený účet), 400 vadný tvar `cloud_id`.
+    Všechno jsou trvalé stavy → INVALID_INPUT, ze kterého platforma udělá
+    `credential_invalid`; jen dočasné problémy (timeout, 5xx, rate limit) →
     UPSTREAM_UNAVAILABLE. Klientovi se nikdy nevrací syrový text výjimky.
     """
     try:
@@ -525,7 +529,7 @@ def test_connection() -> str:
     try:
         client.get_json(f"/clouds/{client.seg(oauth.cloud_id)}")
     except ConnectorError as exc:
-        if exc.status in (401, 403):
+        if exc.status in (400, 401, 403, 404, 410):
             raise ConnectorError(
                 ErrorCode.INVALID_INPUT,
                 "Autorizace Dotykačky vypršela nebo byla odvolána — propoj konektor znovu.",
