@@ -7,8 +7,13 @@ name = "dotykacka-mcp"
 version = "0.1.0"
 description = "Dotykačka / Dotypos POS (API v2) MCP konektor nad openmcp_sdk — delegovaná OAuth autorizace, read-only, GDPR pseudonymizace."
 requires-python = ">=3.12"
+# openmcp-sdk se nepublikuje na PyPI — jméno tam patří nesouvisejícímu
+# projektu s nejvyšší verzí 0.2.20, takže `pip install` na tomhle balíku
+# selhal a po vydání cizí 0.4.x by nainstaloval cizí kód. Reference míří
+# přímo na commit, který je zároveň v `.sdk-ref` a ve vendorovaném snapshotu
+# v `release/vendor/`; shodu hlídá `tests/test_sdk_pin.py`.
 dependencies = [
-  "openmcp-sdk>=0.4,<0.5",
+  "openmcp-sdk @ git+https://github.com/mcp-open/openmcp-sdk@d77b2b1b22e83d64a4fdf900f73c51c578b5f736",
   "fastmcp>=3.2,<4",
   "pydantic>=2.6,<3",
   "httpx>=0.28,<0.29",

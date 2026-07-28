@@ -17,11 +17,17 @@ transport.
 
 ## Lokální vývoj
 
+`openmcp-sdk` není na PyPI (jméno tam patří nesouvisejícímu projektu).
+`pip install -e '.[test]'` ho stáhne z GitHubu podle commitu připnutého
+v `pyproject.toml`; postup níže místo toho použije vendorovaný snapshot
+z repozitáře, takže staví offline a přesně proti tomu SDK, se kterým se
+staví produkční image.
+
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 python release/materialize_sdk.py --root . --output /tmp/openmcp-sdk-dotykacka
-pip install -e /tmp/openmcp-sdk-dotykacka -e '.[test]'
+pip install /tmp/openmcp-sdk-dotykacka -e '.[test]'
 ruff check src tests
 mypy src
 openmcp-sdk validate connector.yaml
