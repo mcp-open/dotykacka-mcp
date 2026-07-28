@@ -13,7 +13,7 @@ requires-python = ">=3.12"
 # přímo na commit, který je zároveň v `.sdk-ref` a ve vendorovaném snapshotu
 # v `release/vendor/`; shodu hlídá `tests/test_sdk_pin.py`.
 dependencies = [
-  "openmcp-sdk @ git+https://github.com/mcp-open/openmcp-sdk@d77b2b1b22e83d64a4fdf900f73c51c578b5f736",
+  "openmcp-sdk @ git+https://github.com/mcp-open/openmcp-sdk@2f041cfa33d4116cf06fb4f26169d16001cf968b",
   "fastmcp>=3.2,<4",
   "pydantic>=2.6,<3",
   "httpx>=0.28,<0.29",

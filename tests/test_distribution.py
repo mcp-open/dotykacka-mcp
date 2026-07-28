@@ -264,7 +264,7 @@ def test_dependency_and_container_inputs_are_pinned():
         "399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
     ) in dockerfile
     assert (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip() == (
-        "d77b2b1b22e83d64a4fdf900f73c51c578b5f736"
+        "2f041cfa33d4116cf06fb4f26169d16001cf968b"
     )
     assert "--require-hashes" in dockerfile
     assert "--no-deps --no-build-isolation" in dockerfile

@@ -15,8 +15,8 @@
 | Distribution scan target fix | `a7df1f51ad62af7449c43d473f18560f46ec4285` |
 | OpenAI handoff contract commit | `58780359b9e27f2900ed979f05f1fa6873928ebb` |
 | Connector version | `dotykacka` `0.1.0` |
-| OpenMCP SDK | `d77b2b1b22e83d64a4fdf900f73c51c578b5f736` |
-| SDK archive SHA-256 | `794d66ff6d76bd5030e6ce6901ea885df2a4e4c005d29a226edb7f4cc198f316` |
+| OpenMCP SDK | `2f041cfa33d4116cf06fb4f26169d16001cf968b` |
+| SDK archive SHA-256 | `984dcb917331b51639111445b506f8c265b9d104a8c6c4dd9aaeca4207f07015` |
 | Template baseline | `34918795eed58a0d60928f318450b748689ce34d` |
 | Python | `3.13.9` |
 | FastMCP | `3.4.4` |
