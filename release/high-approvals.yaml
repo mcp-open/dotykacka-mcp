@@ -1,0 +1,3 @@
+# HIGH nález smí projít jen s jedním záznamem pro přesný artifact SHA-256.
+# expires_at musí být krátké, timezone-aware datum. CRITICAL nemá výjimku.
+[]

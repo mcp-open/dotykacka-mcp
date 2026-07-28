@@ -1,0 +1,121 @@
+# Noční kontrola, že reviewovaný SDK snapshot je stále kompletní, ověřitelný a
+# kompatibilní s konektorem. Cross-repository checkout soukromého SDK přes
+# repository-scoped GITHUB_TOKEN není možný a nesmí se obcházet dlouhodobým
+# credentialem. Kompatibilitu s novým SDK main proto spouští SDK repository
+# ještě před aktualizací snapshotu.
+name: SDK snapshot canary
+
+on:
+  schedule: [{ cron: "0 3 * * *" }]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  SLUG: dotykacka
+
+jobs:
+  canary:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      # The reusable runner workspace may contain a stale Git directory from
+      # an interrupted job. actions/checkout tries to clean auth after deleting
+      # that directory and then fails before the canary runs. Use an isolated,
+      # exact-commit GitHub source archive instead; no credential is persisted.
+      - id: source
+        name: Materialize exact connector source
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          source_dir="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          archive="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          mkdir -m 0700 "$source_dir"
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}" \
+            --output "$archive"
+          tar --extract --gzip --file "$archive" --directory "$source_dir" \
+            --strip-components=1 --no-same-owner
+          test -f "$source_dir/.sdk-ref"
+          test -f "$source_dir/release/materialize_sdk.py"
+          echo "path=$source_dir" >> "$GITHUB_OUTPUT"
+      - id: run
+        if: steps.source.outcome == 'success'
+        continue-on-error: true
+        run: |
+          source_dir="${{ steps.source.outputs.path }}"
+          sdk_dir="/runner-temp/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp -w /src \
+            python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
+            python release/materialize_sdk.py --root . --output "$sdk_dir"
+          docker run --rm -v "$source_dir":/src:ro -v "$RUNNER_TEMP":/runner-temp:ro \
+            -e SDK_DIR="$sdk_dir" -w /src \
+            python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
+            sh -c '
+            set -eu
+            work_dir="$(mktemp -d)"
+            trap '\''rm -rf -- "$work_dir"'\'' EXIT
+            cp -a /src "$work_dir/connector"
+            cp -a "$SDK_DIR" "$work_dir/sdk"
+            cd "$work_dir/connector"
+            pip install -q --no-cache-dir --only-binary=:all: \
+              --require-hashes -r release/python-requirements.lock
+            pip install -q --no-cache-dir --no-deps --no-build-isolation \
+              "$work_dir/sdk" .
+            pip check
+            openmcp-sdk validate connector.yaml
+            python -m pytest tests -q
+          '
+      - name: Clean isolated canary inputs
+        if: always() && steps.source.outputs.path != ''
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.path }}
+        run: |
+          set -eu
+          expected="$RUNNER_TEMP/dotykacka-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sdk_dir="$RUNNER_TEMP/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$SOURCE_DIR" = "$expected"
+          case "$sdk_dir" in "$RUNNER_TEMP"/openmcp-sdk-*) ;; *) exit 2 ;; esac
+          # The test container may create root-owned wheel build files inside
+          # the mounted SDK source. Remove only this validated per-run path in
+          # the same pinned container boundary, then clean runner-owned input.
+          docker run --rm -v "$RUNNER_TEMP":/runner-temp \
+            python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 \
+            sh -c 'rm -rf -- "$1"' cleanup \
+            "/runner-temp/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf -- "$SOURCE_DIR" "$expected.tar.gz"
+      - if: steps.source.outcome == 'failure' || steps.run.outcome == 'failure'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const title = `SDK snapshot: ${process.env.SLUG} neprošel kontrolou kompatibility`;
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'sdk-canary',
+            });
+            const body = `Noční běh proti reviewovanému SDK snapshotu selhal.\n\n`
+              + `Běh: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`
+              + `/actions/runs/${context.runId}`;
+            if (issues.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issues[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['sdk-canary'],
+              });
+            }
+      - name: Fail the canary after reporting
+        if: steps.source.outcome == 'failure' || steps.run.outcome == 'failure'
+        run: exit 1

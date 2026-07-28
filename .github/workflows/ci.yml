@@ -1,0 +1,60 @@
+# Connector CI validates source and rendered adapters only. Hostinger is a
+# direct development environment: image build, scan, deployment and hosted E2E
+# are performed through the approved SSH Manager release path and recorded in
+# platform evidence. This workflow must never dispatch a cluster deployment.
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SLUG: dotykacka
+
+concurrency: { group: "ci-${{ github.repository }}", cancel-in-progress: false }
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: "${{ env.SLUG }}"
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: { python-version: "3.13.9" }
+
+      # Repository-scoped GITHUB_TOKEN must not be replaced with a persistent
+      # cross-repository credential. The archive is bound to the reviewed
+      # .sdk-ref and the distribution workflow consumes the same input.
+      - name: Verify and materialize exact SDK source
+        id: sdk
+        run: |
+          sdk_dir="${RUNNER_TEMP}/openmcp-sdk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python "${SLUG}/release/materialize_sdk.py" \
+            --root "${SLUG}" --output "$sdk_dir"
+          echo "path=$sdk_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Lint, typecheck, manifest and tests
+        run: |
+          set -eu
+          python -m pip install -q --disable-pip-version-check \
+            --only-binary=:all: --require-hashes \
+            -r "${SLUG}/release/python-requirements.lock"
+          python -m pip install -q --disable-pip-version-check \
+            --no-deps --no-build-isolation \
+            "${{ steps.sdk.outputs.path }}" "./${SLUG}"
+          python -m pip check
+          python -m ruff check "${SLUG}/src" "${SLUG}/tests"
+          python -m mypy "${SLUG}/src"
+          (cd "$SLUG" && openmcp-sdk validate connector.yaml)
+          ADAPTER_DIR=$(mktemp -d)
+          (cd "$SLUG" && openmcp-sdk render-adapters \
+            connector.yaml distribution.yaml --output "$ADAPTER_DIR/rendered")
+          (cd "$SLUG" && python -m pytest tests -q)

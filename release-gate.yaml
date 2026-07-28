@@ -1,0 +1,57 @@
+# Fail-closed evidence paths pro interní remote adapter kandidáty.
+schema_version: 1
+source_repository: https://github.com/mcp-open/dotykacka-mcp
+builder_identity: https://github.com/mcp-open/dotykacka-mcp/.github/workflows/distribution-release.yml@refs/heads/main
+oidc_issuer: https://token.actions.githubusercontent.com
+trivy_version: 0.72.0
+high_approvals: release/high-approvals.yaml
+high_approvers: []
+
+artifacts:
+  - target: openai_remote
+    artifact: release/dist/openai/submission.json
+    sbom: release/evidence/openai.spdx.json
+    scan: release/evidence/openai.trivy.json
+    contents_manifest: release/evidence/openai.contents.json
+    scan_targets:
+      - build-inputs/runtime/requirements.txt
+      - build-inputs/release/requirements.txt
+    signature_bundle: release/evidence/openai.sigstore.json
+    provenance: release/evidence/openai.provenance.json
+    provenance_bundle: release/evidence/openai.provenance.sigstore.json
+    lockfiles:
+      - .sdk-ref
+      - release/runtime-requirements.in
+      - release/python-requirements.in
+      - release/runtime-requirements.lock
+      - release/python-requirements.lock
+      - release/vendor/openmcp-sdk-d77b2b1b22e83d64a4fdf900f73c51c578b5f736.tar.gz
+      - release/vendor/openmcp-sdk.sha256
+      - release/high-approvals.yaml
+      - release/toolchain.lock
+      - release/evidence/mcpb-npm-audit.json
+      - release/evidence/openai.contents.spdx.json
+
+  - target: gemini_remote
+    artifact: release/dist/openmcp-dotykacka-0.1.0-gemini.zip
+    sbom: release/evidence/gemini.spdx.json
+    scan: release/evidence/gemini.trivy.json
+    contents_manifest: release/evidence/gemini.contents.json
+    scan_targets:
+      - build-inputs/runtime/requirements.txt
+      - build-inputs/release/requirements.txt
+    signature_bundle: release/evidence/gemini.sigstore.json
+    provenance: release/evidence/gemini.provenance.json
+    provenance_bundle: release/evidence/gemini.provenance.sigstore.json
+    lockfiles:
+      - .sdk-ref
+      - release/runtime-requirements.in
+      - release/python-requirements.in
+      - release/runtime-requirements.lock
+      - release/python-requirements.lock
+      - release/vendor/openmcp-sdk-d77b2b1b22e83d64a4fdf900f73c51c578b5f736.tar.gz
+      - release/vendor/openmcp-sdk.sha256
+      - release/high-approvals.yaml
+      - release/toolchain.lock
+      - release/evidence/mcpb-npm-audit.json
+      - release/evidence/gemini.contents.spdx.json
