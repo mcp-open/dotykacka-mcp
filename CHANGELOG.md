@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-07-31
+
+- Runtime je připnutý na SDK revizi `88ecbf8a`, která rozlišuje
+  chybějící upstream záznamy (HTTP 404/410) jako `not_found` místo obecného
+  `invalid_input`. Platforma tak může bezpečně poradit, že zadaný záznam
+  neexistuje, aniž by zveřejnila upstream odpověď.
+
 ## 0.1.1 — 2026-07-31
 
 - Opravené pořadí nejnovějších objednávek, validace období, bezpečné zpracování
