@@ -69,6 +69,16 @@ FREETEXT_FIELDS = frozenset(
     {"note", "notes", "description", "text", "internalnote", "headerprint"}
 )
 
+# Zákaznická firemní jména mohou ve skutečnosti nést jméno OSVČ. Poznámky a
+# tisková hlavička jsou libovolný text a regexový scrub umí spolehlivě zachytit
+# jen e-mail, telefon a URL, ne jména ani poštovní adresy. V person-scope proto
+# musí celé pole skončit jako token; mimo person-scope zůstává katalogový či
+# objednávkový volný text čitelný a prochází běžným scrubem.
+_PERSON_NAME_FIELDS = frozenset({"companyname"})
+_PERSON_FREETEXT_FIELDS = frozenset(
+    {"note", "notes", "internalnote", "headerprint"}
+)
+
 # `barcode` je u zákazníka věrnostní identifikátor a u zaměstnance osobní
 # identifikátor, ale u produktu je to běžná katalogová hodnota. Globální
 # `field_category` by proto zničila čitelnost katalogu; tokenizuje se jen v
@@ -80,7 +90,12 @@ class DotykackaPseudonymizer(Pseudonymizer):
     """Dotykačka výjimky, které závisí na kontextu objektu osoby."""
 
     def handle_field(self, key: str, value: Any, *, person_scope: bool) -> Any:
-        if key.lower() in _PERSON_IDENTIFIER_FIELDS:
+        lkey = key.lower()
+        if person_scope and lkey in _PERSON_NAME_FIELDS:
+            return self._tokenize_by_category("NAME", value, person_scope=person_scope)
+        if person_scope and lkey in _PERSON_FREETEXT_FIELDS:
+            return self._tokenize_by_category("TEXT", value, person_scope=person_scope)
+        if lkey in _PERSON_IDENTIFIER_FIELDS:
             if person_scope:
                 return self._tokenize_by_category("ID", value, person_scope=person_scope)
             # Produktový EAN není telefon ani PII. Obecný regex scrub by čistě

@@ -66,10 +66,11 @@ _MAX_LIMIT = 100
 _MAX_RECORDS = 500
 _PAGE_LIMIT = 100
 
-# `cloudId` je podle Dotykačka API kladné celočíselné ID. Přijímáme jen
+# `cloudId` je podle Dotykačka API kladné 32bitové `integer` ID. Přijímáme jen
 # kanonický zápis: okolní mezery či vedoucí nuly by jinak mohly ve výměně OAuth
 # tokenu, URL a PII tenant scope označovat tutéž provozovnu různě.
-_CLOUD_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
+_CLOUD_ID_RE = re.compile(r"^[1-9][0-9]{0,9}$")
+_MAX_CLOUD_ID = 2_147_483_647
 
 # Diagnostický request control plane musí doběhnout pod jeho tvrdým timeoutem.
 # Jeden pokus brání tomu, aby výchozí 4 × 30 s retry udělalo z dočasné 5xx
@@ -123,7 +124,11 @@ def _normalize_cloud_id(value: Any) -> str:
     if isinstance(value, bool):
         raise ConnectorError(ErrorCode.CREDENTIAL_INVALID, "Uložené cloud ID je neplatné.")
     raw = str(value) if isinstance(value, int) else value
-    if not isinstance(raw, str) or not _CLOUD_ID_RE.fullmatch(raw):
+    if (
+        not isinstance(raw, str)
+        or not _CLOUD_ID_RE.fullmatch(raw)
+        or int(raw) > _MAX_CLOUD_ID
+    ):
         raise ConnectorError(ErrorCode.CREDENTIAL_INVALID, "Uložené cloud ID je neplatné.")
     return raw
 
@@ -137,6 +142,32 @@ def _pii_owner_scope(principal: Any) -> str:
     if isinstance(sub, str) and sub:
         return sub
     raise ConnectorError(ErrorCode.INTERNAL, "Chybí ověřená identita požadavku.")
+
+
+def _get_with_single_403_refresh(
+    client: UpstreamClient,
+    oauth: DelegatedOAuthClient,
+    path: str,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    """Dotykačka hlásí expirovaný access token 403; obnov ho nejvýš jednou."""
+    refreshed = False
+    while True:
+        try:
+            return client.get_json(path, params)
+        except ConnectorError as exc:
+            if exc.status != 403 or refreshed:
+                raise
+            try:
+                oauth.invalidate()
+            except ConnectorError:
+                raise
+            except Exception:
+                raise ConnectorError(
+                    ErrorCode.UPSTREAM_UNAVAILABLE,
+                    "Nepodařilo se obnovit autorizaci Dotykačky.",
+                ) from None
+            refreshed = True
 
 
 def _iso(dt: datetime) -> str:
@@ -175,7 +206,7 @@ class _Session:
 
     Klient žije po dobu celého volání (agregace v `sales_summary` prochází víc
     stránek — jinak by každá znamenala nový TLS handshake). Pseudonymizér je taky
-    per-request, protože jeho HMAC klíč je odvozený ze `sub`.
+    per-request, protože jeho HMAC klíč je odvozený z vlastníka credentials.
     """
 
     def __init__(self) -> None:
@@ -187,6 +218,7 @@ class _Session:
             raise ConnectorError(
                 ErrorCode.CREDENTIAL_INVALID, "Uložené cloud ID je neplatné."
             ) from exc
+        self.oauth = oauth
         # `ctx.oauth` splňuje `openmcp_sdk.http.TokenProvider` (access_token() +
         # invalidate()) — `UpstreamClient` samo obnoví token jednou při 401.
         self.client = UpstreamClient(
@@ -207,7 +239,7 @@ class _Session:
         """GET zdroje v rámci cloudu: `/clouds/{cloud_id}/{resource}`."""
         cloud = self.client.seg(self.cloud_id)
         path = f"/clouds/{cloud}/{resource}" if resource else f"/clouds/{cloud}"
-        return self.client.get_json(path, params)
+        return _get_with_single_403_refresh(self.client, self.oauth, path, params)
 
     def get_cloud(self) -> Any:
         """Detail cloudu (provozovny): `/clouds/{cloud_id}`."""
@@ -279,7 +311,26 @@ def _collect_orders(
     page = 1
     truncated = False
     while True:
-        payload = _fetch(session, "orders", {**params, "page": page})
+        try:
+            payload = _fetch(session, "orders", {**params, "page": page})
+        except ConnectorError as exc:
+            if exc.status != 404:
+                raise
+            if page == 1:
+                # Dotykačka používá 404 jak pro prázdný výsledek listu, tak
+                # pro neexistující cloud. Jen v tomto nejednoznačném edge
+                # ověříme cloud detailem; na dalších stránkách je 404 konec.
+                try:
+                    session.get_cloud()
+                except ConnectorError as cloud_exc:
+                    if cloud_exc.status in (404, 410):
+                        raise ConnectorError(
+                            ErrorCode.INSTANCE_UNKNOWN,
+                            "Dotykačka nezná uložený cloud — propoj konektor znovu.",
+                            status=cloud_exc.status,
+                        ) from cloud_exc
+                    raise
+            break
         batch = _page_items(payload)
         if not batch:
             break
@@ -296,8 +347,18 @@ def _collect_orders(
             elif isinstance(total, int) and not isinstance(total, bool) and total >= 0:
                 truncated = total > _MAX_RECORDS
             elif len(batch) == _PAGE_LIMIT:
-                probe = _fetch(session, "orders", {**params, "page": page + 1})
-                truncated = bool(_page_items(probe))
+                try:
+                    probe = _fetch(session, "orders", {**params, "page": page + 1})
+                except ConnectorError as exc:
+                    # Orders záměrně neposkytují totalItemsCount/lastPage.
+                    # Dotykačka dokumentuje 404 jako konec stránkování, takže
+                    # pouze tato odpověď z hraniční sondy znamená „přesně 500“.
+                    # Permission, rate-limit i 5xx musí dál selhat hlasitě.
+                    if exc.status != 404:
+                        raise
+                    truncated = False
+                else:
+                    truncated = bool(_page_items(probe))
             break
         if len(batch) < _PAGE_LIMIT:
             break
@@ -573,12 +634,14 @@ def sales_summary(
 def test_connection() -> str:
     """Ad-hoc test spojení s Dotykačkou — ověří, že OAuth přístup funguje.
 
-    Lehký jednorázový GET `/clouds/{cloud_id}` (bez PII sanitizace ani envelope)
-    má krátký tvrdý timeout. Chyby se klasifikují strukturovaně přes
+    Lehký GET `/clouds/{cloud_id}` (bez PII sanitizace ani envelope) má krátký
+    tvrdý timeout a nejvýš jeden auth replay po 403. Chyby se klasifikují přes
     `ConnectorError.status`, ne parsováním textu: 400/401 jsou vadné nebo
-    odvolané credentials, 403 chybějící oprávnění, 404/410 neznámý cloud, 429
-    omezení provozu a ostatní selhání dočasná nedostupnost upstreamu. Klientovi
-    se nikdy nevrací syrový text výjimky ani identifikátor cloudu.
+    odvolané credentials, první 403 jednou obnoví access token (Dotykačka tak
+    hlásí i jeho expiraci), opakovaný 403 je chybějící oprávnění, 404/410
+    neznámý cloud, 429 omezení provozu a ostatní selhání dočasná nedostupnost
+    upstreamu. Klientovi se nikdy nevrací syrový text výjimky ani identifikátor
+    cloudu.
     """
     try:
         oauth = _oauth()
@@ -599,7 +662,7 @@ def test_connection() -> str:
         ) from exc
 
     try:
-        client.get_json(f"/clouds/{client.seg(cloud_id)}")
+        _get_with_single_403_refresh(client, oauth, f"/clouds/{client.seg(cloud_id)}")
     except ConnectorError as exc:
         if exc.status in (400, 401) or exc.code is ErrorCode.CREDENTIAL_INVALID:
             raise ConnectorError(

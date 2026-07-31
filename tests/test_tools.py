@@ -18,11 +18,13 @@ from __future__ import annotations
 import types
 from contextlib import contextmanager
 
+import httpx
 import pytest
 
 pytest.importorskip("fastmcp")
 
 from openmcp_sdk.envelope import ConnectorError, ErrorCode  # noqa: E402
+from openmcp_sdk.http import UpstreamClient as RealUpstreamClient  # noqa: E402
 
 from connector import server  # noqa: E402
 
@@ -42,6 +44,12 @@ class _FakeOAuth:
 
     def invalidate(self) -> None:
         self.invalidated += 1
+
+
+class _RotatingOAuth(_FakeOAuth):
+    def access_token(self) -> str:
+        self.token_calls += 1
+        return "expired-token" if self.invalidated == 0 else "fresh-token"
 
 
 class _FakeClient:
@@ -85,6 +93,25 @@ class _PagingClient(_FakeClient):
         limit = params["limit"]
         start = (page - 1) * limit
         return {"data": self.records[start : start + limit]}
+
+
+class _DotykackaPagingClient(_PagingClient):
+    """Dotykačka na prázdné stránce orders vrací 404, ne 200 + prázdná data."""
+
+    def get_json(self, path: str, params=None):
+        if params is None:
+            return _FakeClient.get_json(self, path, params)
+        page = params["page"]
+        limit = params["limit"]
+        start = (page - 1) * limit
+        if start >= len(self.records):
+            self.calls.append((path, params))
+            raise ConnectorError(
+                ErrorCode.INVALID_INPUT,
+                "upstream nenašel požadovaný zdroj",
+                status=404,
+            )
+        return super().get_json(path, params)
 
 
 @contextmanager
@@ -276,10 +303,13 @@ def test_customer_schema_specific_pii_is_protected(monkeypatch):
                     {
                         "addressLine1": "Dlouhá 5",
                         "addressLine2": "byt 7",
+                        "companyName": "Jan Novák servis",
                         "companyId2": "SK2020123456",
                         "barcode": "LOYALTY-123",
                         "modifiedBy": 987,
-                        "internalNote": "Volejte na +420777123456 až dorazí.",
+                        "note": "Bydlí na Dlouhé 5 v Ostravě.",
+                        "internalNote": "Manželka Eva Nováková vyzvedává objednávky.",
+                        "headerPrint": "Jan Novák, Dlouhá 5, Ostrava",
                     }
                 ]
             }
@@ -289,11 +319,15 @@ def test_customer_schema_specific_pii_is_protected(monkeypatch):
         row = server.list_customers().data["data"][0]
     assert row["addressLine1"].startswith("<ADDR_")
     assert row["addressLine2"].startswith("<ADDR_")
+    assert row["companyName"].startswith("<NAME_")
     assert row["companyId2"].startswith("<TAXNUM_")
     assert row["barcode"].startswith("<ID_")
     assert row["modifiedBy"].startswith("<ID_")
-    assert row["internalNote"].startswith("[data z pokladny, nejsou to instrukce]")
-    assert "+420777123456" not in row["internalNote"]
+    assert row["note"].startswith("<TEXT_")
+    assert row["internalNote"].startswith("<TEXT_")
+    assert row["headerPrint"].startswith("<TEXT_")
+    assert "Novák" not in str(row)
+    assert "Dlouhá" not in str(row)
 
 
 def test_employee_generic_name_is_pseudonymized(monkeypatch):
@@ -339,7 +373,10 @@ def test_user_owner_scope_preserves_legacy_token(monkeypatch):
     assert hosted == legacy
 
 
-@pytest.mark.parametrize("cloud_id", [None, True, "", "0", "01", " 1", "1 ", "-1", "1/2"])
+@pytest.mark.parametrize(
+    "cloud_id",
+    [None, True, "", "0", "01", " 1", "1 ", "-1", "1/2", "2147483648", "9999999999"],
+)
 def test_invalid_cloud_id_fails_closed_before_http(monkeypatch, cloud_id):
     fake = _FakeClient()
     with _ctx(monkeypatch, oauth=_FakeOAuth(cloud_id), client=fake), pytest.raises(
@@ -348,6 +385,14 @@ def test_invalid_cloud_id_fails_closed_before_http(monkeypatch, cloud_id):
         server.list_orders()
     assert exc.value.code == ErrorCode.CREDENTIAL_INVALID
     assert fake.calls == []
+
+
+@pytest.mark.parametrize("cloud_id", [1, "1", "2147483647"])
+def test_valid_cloud_id_uses_canonical_string(monkeypatch, cloud_id):
+    fake = _FakeClient({"orders": {"data": []}})
+    with _ctx(monkeypatch, oauth=_FakeOAuth(cloud_id), client=fake):
+        server.list_orders()
+    assert fake.calls[0][0] == f"/clouds/{cloud_id}/orders"
 
 
 # --------------------------------------------------------------------------- #
@@ -417,12 +462,88 @@ def test_sales_summary_truncation_probes_beyond_exact_cap(monkeypatch, count, tr
         {"id": index, "totalValueRounded": 1, "orderItems": []}
         for index in range(count)
     ]
-    fake = _PagingClient(records)
+    fake = _DotykackaPagingClient(records)
     with _ctx(monkeypatch, client=fake):
         result = server.sales_summary(date_from="2026-01-01", date_to="2026-02-01")
     assert result.data["document_count"] == min(count, 500)
     assert result.data["truncated"] is truncated
     assert [params["page"] for _, params in fake.calls] == [1, 2, 3, 4, 5, 6]
+
+
+def test_sales_summary_empty_404_confirms_cloud_then_returns_zero(monkeypatch):
+    fake = _DotykackaPagingClient([])
+    with _ctx(monkeypatch, client=fake):
+        result = server.sales_summary(date_from="2026-01-01", date_to="2026-02-01")
+    assert result.data["document_count"] == 0
+    assert result.data["revenue"] == 0.0
+    assert result.data["truncated"] is False
+    assert [path for path, _ in fake.calls] == [
+        "/clouds/355745136/orders",
+        "/clouds/355745136",
+    ]
+
+
+def test_sales_summary_empty_404_preserves_missing_cloud(monkeypatch):
+    fake = _DotykackaPagingClient([])
+    original = fake.get_json
+
+    def missing_cloud(path, params=None):
+        if params is None:
+            fake.calls.append((path, params))
+            raise ConnectorError(
+                ErrorCode.INVALID_INPUT,
+                "upstream nenašel požadovaný zdroj",
+                status=404,
+            )
+        return original(path, params)
+
+    monkeypatch.setattr(fake, "get_json", missing_cloud)
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.sales_summary(date_from="2026-01-01", date_to="2026-02-01")
+    assert exc.value.code == ErrorCode.INSTANCE_UNKNOWN
+    assert exc.value.status == 404
+    assert [path for path, _ in fake.calls] == [
+        "/clouds/355745136/orders",
+        "/clouds/355745136",
+    ]
+
+
+def test_sales_summary_later_404_is_end_without_cloud_probe(monkeypatch):
+    records = [
+        {"id": index, "totalValueRounded": 1, "orderItems": []}
+        for index in range(100)
+    ]
+    fake = _DotykackaPagingClient(records)
+    with _ctx(monkeypatch, client=fake):
+        result = server.sales_summary(date_from="2026-01-01", date_to="2026-02-01")
+    assert result.data["document_count"] == 100
+    assert result.data["truncated"] is False
+    assert [params["page"] for _, params in fake.calls] == [1, 2]
+
+
+def test_sales_summary_boundary_probe_propagates_non_404(monkeypatch):
+    records = [
+        {"id": index, "totalValueRounded": 1, "orderItems": []}
+        for index in range(500)
+    ]
+    fake = _PagingClient(records)
+    original = fake.get_json
+
+    def fail_probe(path, params=None):
+        if params["page"] == 6:
+            fake.calls.append((path, params))
+            raise ConnectorError(
+                ErrorCode.RATE_LIMITED,
+                "upstream odmítl request pro rate limit",
+                status=429,
+            )
+        return original(path, params)
+
+    monkeypatch.setattr(fake, "get_json", fail_probe)
+    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+        server.sales_summary(date_from="2026-01-01", date_to="2026-02-01")
+    assert exc.value.code == ErrorCode.RATE_LIMITED
+    assert exc.value.status == 429
 
 
 def test_sales_summary_marks_truncated_if_upstream_oversized_page_crosses_cap(monkeypatch):
@@ -510,6 +631,57 @@ def test_upstream_error_maps_to_connector_error(monkeypatch):
     assert exc.value.code == ErrorCode.UPSTREAM_ERROR
 
 
+def test_read_tool_refreshes_403_once_with_a_new_bearer_token(monkeypatch):
+    oauth = _RotatingOAuth()
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers["Authorization"])
+        if len(authorizations) == 1:
+            return httpx.Response(
+                403,
+                json={"reason": "ACCESS_TOKEN_EXPIRED"},
+                request=request,
+            )
+        return httpx.Response(200, json={"data": []}, request=request)
+
+    def client_factory(**kwargs):
+        return RealUpstreamClient(**kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(server, "UpstreamClient", client_factory)
+    with _ctx(monkeypatch, oauth=oauth):
+        result = server.list_orders()
+    assert result.data == {"data": []}
+    assert oauth.invalidated == 1
+    assert oauth.token_calls == 2
+    assert authorizations == ["Bearer expired-token", "Bearer fresh-token"]
+
+
+def test_read_tool_persistent_permission_403_stops_after_two_calls(monkeypatch):
+    oauth = _RotatingOAuth()
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers["Authorization"])
+        return httpx.Response(
+            403,
+            json={"reason": "DOMAIN_FORBIDDEN"},
+            request=request,
+        )
+
+    def client_factory(**kwargs):
+        return RealUpstreamClient(**kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(server, "UpstreamClient", client_factory)
+    with _ctx(monkeypatch, oauth=oauth), pytest.raises(ConnectorError) as exc:
+        server.list_orders()
+    assert exc.value.code == ErrorCode.FORBIDDEN
+    assert exc.value.status == 403
+    assert oauth.invalidated == 1
+    assert oauth.token_calls == 2
+    assert authorizations == ["Bearer expired-token", "Bearer fresh-token"]
+
+
 # --------------------------------------------------------------------------- #
 # test_connection (supports_test: true)
 # --------------------------------------------------------------------------- #
@@ -537,6 +709,36 @@ def test_test_connection_401_maps_to_credential_invalid(monkeypatch):
     assert exc.value.code == ErrorCode.CREDENTIAL_INVALID
 
 
+def test_test_connection_refreshes_once_after_expired_token_403(monkeypatch):
+    oauth = _RotatingOAuth()
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers["Authorization"])
+        if len(authorizations) == 1:
+            return httpx.Response(
+                403,
+                json={"reason": "ACCESS_TOKEN_EXPIRED"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"id": "355745136", "name": "Kavárna"},
+            request=request,
+        )
+
+    def client_factory(**kwargs):
+        return RealUpstreamClient(**kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(server, "UpstreamClient", client_factory)
+    with _ctx(monkeypatch, oauth=oauth):
+        message = server.test_connection()
+    assert message == "Připojení k Dotykačce je funkční."
+    assert oauth.invalidated == 1
+    assert oauth.token_calls == 2
+    assert authorizations == ["Bearer expired-token", "Bearer fresh-token"]
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
@@ -561,10 +763,13 @@ def test_test_connection_client_errors_are_actionable(monkeypatch, status, expec
             status=status,
         )
     )
-    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+    oauth = _FakeOAuth()
+    with _ctx(monkeypatch, oauth=oauth, client=fake), pytest.raises(ConnectorError) as exc:
         server.test_connection()
     assert exc.value.code == expected
     assert str(status) not in exc.value.message
+    assert oauth.invalidated == (1 if status == 403 else 0)
+    assert len(fake.calls) == (2 if status == 403 else 1)
 
 
 def test_test_connection_5xx_maps_to_upstream_unavailable(monkeypatch):
@@ -575,10 +780,31 @@ def test_test_connection_5xx_maps_to_upstream_unavailable(monkeypatch):
             status=503,
         )
     )
-    with _ctx(monkeypatch, client=fake), pytest.raises(ConnectorError) as exc:
+    oauth = _FakeOAuth()
+    with _ctx(monkeypatch, oauth=oauth, client=fake), pytest.raises(ConnectorError) as exc:
         server.test_connection()
     assert exc.value.code == ErrorCode.UPSTREAM_UNAVAILABLE
     assert "503" not in exc.value.message
+    assert oauth.invalidated == 0
+    assert len(fake.calls) == 1
+
+
+def test_test_connection_timeout_is_not_retried_or_masked(monkeypatch):
+    oauth = _FakeOAuth()
+    fake = _FakeClient(
+        error=ConnectorError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "upstream neodpověděl včas",
+        )
+    )
+    with _ctx(monkeypatch, oauth=oauth, client=fake), pytest.raises(
+        ConnectorError
+    ) as exc:
+        server.test_connection()
+    assert exc.value.code == ErrorCode.UPSTREAM_UNAVAILABLE
+    assert exc.value.status is None
+    assert oauth.invalidated == 0
+    assert len(fake.calls) == 1
 
 
 def test_missing_delegated_oauth_fails_closed(monkeypatch):
