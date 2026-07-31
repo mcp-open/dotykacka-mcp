@@ -1,6 +1,6 @@
 slug: dotykacka
 name: Dotykačka
-version: 0.1.1
+version: 0.1.2
 category: pokladna
 summary: >
   Čtecí přístup k pokladnímu systému Dotykačka / Dotypos (API v2) — účtenky

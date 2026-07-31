@@ -27,7 +27,7 @@ def test_basic_identity() -> None:
     m = _manifest()
     assert m.slug == "dotykacka"
     assert m.name == "Dotykačka"
-    assert m.version == "0.1.1"
+    assert m.version == "0.1.2"
     assert m.sdk_min_version == "0.4.3"
     assert m.category == "pokladna"
 

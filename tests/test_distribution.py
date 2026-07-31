@@ -55,7 +55,7 @@ def test_openai_handoff_is_fail_closed_and_exact(tmp_path: Path):
     assert submission["artifact_kind"] == "operator_handoff"
     assert submission["installable"] is False
     assert submission["submission_state"] == "blocked"
-    assert submission["connector"] == {"slug": "dotykacka", "version": "0.1.1"}
+    assert submission["connector"] == {"slug": "dotykacka", "version": "0.1.2"}
     assert submission["mcp_server_url"] is None
     assert submission["workspace_mcp_server_url_template"] == (
         "https://mcp.openmcp.cz/w/{workspace}/mcp"
@@ -101,7 +101,7 @@ def test_openai_handoff_is_fail_closed_and_exact(tmp_path: Path):
 
 def test_gemini_bundle_is_remote_only_sensitive_and_exact(tmp_path: Path):
     _, output = _render(tmp_path)
-    archive_path = output / "openmcp-dotykacka-0.1.1-gemini.zip"
+    archive_path = output / "openmcp-dotykacka-0.1.2-gemini.zip"
 
     with zipfile.ZipFile(archive_path) as archive:
         assert archive.namelist() == [
@@ -114,7 +114,7 @@ def test_gemini_bundle_is_remote_only_sensitive_and_exact(tmp_path: Path):
         install = archive.read("INSTALL.md").decode("utf-8")
 
     assert extension["name"] == "openmcp-dotykacka"
-    assert extension["version"] == "0.1.1"
+    assert extension["version"] == "0.1.2"
     assert extension["contextFileName"] == "GEMINI.md"
     assert set(extension["mcpServers"]) == {"dotykacka"}
     server = extension["mcpServers"]["dotykacka"]
@@ -276,7 +276,7 @@ def test_dependency_and_container_inputs_are_pinned():
         "399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
     ) in dockerfile
     assert (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip() == (
-        "0d36cf1a93c870fe237ecbe3bee7b52b202df18d"
+        "88ecbf8ac0b9a5c53665331322ccfb31b80458ab"
     )
     assert "--require-hashes" in dockerfile
     assert "--no-deps --no-build-isolation" in dockerfile
