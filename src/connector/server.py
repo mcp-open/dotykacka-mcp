@@ -16,9 +16,11 @@ docstring `connectors/raynet-mcp/src/connector/server.py`.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -32,12 +34,12 @@ from openmcp_sdk import (
     current_context,
     now_utc_iso,
 )
-from openmcp_sdk.http import SERVER_ERRORS_ONLY, UpstreamClient
+from openmcp_sdk.http import NO_RETRY, SERVER_ERRORS_ONLY, UpstreamClient
 from openmcp_sdk.http import encode_segment as _seg
-from openmcp_sdk.pii import Pseudonymizer, derive_key
+from openmcp_sdk.pii import derive_key
 from pydantic import Field
 
-from connector.pii_fields import POLICY
+from connector.pii_fields import POLICY, DotykackaPseudonymizer
 from connector.schemas import (
     CategoryListResult,
     CloudInfoResult,
@@ -63,6 +65,17 @@ _MAX_LIMIT = 100
 # u delšího období se výsledek označí `truncated=True`.
 _MAX_RECORDS = 500
 _PAGE_LIMIT = 100
+
+# `cloudId` je podle Dotykačka API kladné celočíselné ID. Přijímáme jen
+# kanonický zápis: okolní mezery či vedoucí nuly by jinak mohly ve výměně OAuth
+# tokenu, URL a PII tenant scope označovat tutéž provozovnu různě.
+_CLOUD_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
+
+# Diagnostický request control plane musí doběhnout pod jeho tvrdým timeoutem.
+# Jeden pokus brání tomu, aby výchozí 4 × 30 s retry udělalo z dočasné 5xx
+# falešný credential timeout.
+_PROBE_TIMEOUT_S = 5.0
+_PROBE_CONNECT_TIMEOUT_S = 2.0
 
 mcp: FastMCP = FastMCP(
     "dotykacka",
@@ -99,10 +112,31 @@ def _oauth() -> DelegatedOAuthClient:
     oauth = current_context().oauth
     if oauth is None:
         raise ConnectorError(
-            ErrorCode.INVALID_INPUT,
+            ErrorCode.CREDENTIAL_INVALID,
             "Chybí platná autorizace Dotykačky",
         )
     return oauth
+
+
+def _normalize_cloud_id(value: Any) -> str:
+    """Validuj uložený OAuth selector dřív, než vstoupí do tokenu, URL a PII scope."""
+    if isinstance(value, bool):
+        raise ConnectorError(ErrorCode.CREDENTIAL_INVALID, "Uložené cloud ID je neplatné.")
+    raw = str(value) if isinstance(value, int) else value
+    if not isinstance(raw, str) or not _CLOUD_ID_RE.fullmatch(raw):
+        raise ConnectorError(ErrorCode.CREDENTIAL_INVALID, "Uložené cloud ID je neplatné.")
+    return raw
+
+
+def _pii_owner_scope(principal: Any) -> str:
+    """Vlastník credentials, ne aktuální člen týmu, určuje stabilitu PII tokenů."""
+    owner_id = getattr(principal, "credential_owner_id", None)
+    if isinstance(owner_id, str) and owner_id:
+        return owner_id
+    sub = getattr(principal, "sub", None)
+    if isinstance(sub, str) and sub:
+        return sub
+    raise ConnectorError(ErrorCode.INTERNAL, "Chybí ověřená identita požadavku.")
 
 
 def _iso(dt: datetime) -> str:
@@ -147,7 +181,12 @@ class _Session:
     def __init__(self) -> None:
         ctx = current_context()
         oauth = _oauth()
-        self.cloud_id = str(oauth.cloud_id)
+        try:
+            self.cloud_id = _normalize_cloud_id(oauth.cloud_id)
+        except AttributeError as exc:
+            raise ConnectorError(
+                ErrorCode.CREDENTIAL_INVALID, "Uložené cloud ID je neplatné."
+            ) from exc
         # `ctx.oauth` splňuje `openmcp_sdk.http.TokenProvider` (access_token() +
         # invalidate()) — `UpstreamClient` samo obnoví token jednou při 401.
         self.client = UpstreamClient(
@@ -156,8 +195,8 @@ class _Session:
         # Pseudonymizace je povinná bezpečnostní hranice, ne provozní přepínač.
         # Cloud je skutečný datový tenant. Jeden uživatel může přepojit jiný
         # cloud; jeho tokeny pak nesmí být korelovatelné s předchozím cloudem.
-        self.pseudo = Pseudonymizer(
-            derive_key(ctx.principal.sub, self.cloud_id),
+        self.pseudo = DotykackaPseudonymizer(
+            derive_key(_pii_owner_scope(ctx.principal), self.cloud_id),
             POLICY,
         )
 
@@ -229,12 +268,12 @@ def _collect_orders(
     Stahuje po ``_PAGE_LIMIT`` až do ``_MAX_RECORDS`` (bezpečnostní strop) — u
     delšího období se výsledek označí truncated=True (agregace se tiše neusekne).
     """
-    params: dict[str, Any] = {"sort": "created", "limit": _PAGE_LIMIT}
+    params: dict[str, Any] = {"sort": "-created", "limit": _PAGE_LIMIT}
     filters = _order_date_filter(date_from, date_to)
     if filters:
         params["filter"] = filters
     if include_items:
-        params["include"] = "orderItems,moneyLogs"
+        params["include"] = "orderItems"
 
     records: list[dict[str, Any]] = []
     page = 1
@@ -246,8 +285,19 @@ def _collect_orders(
             break
         records.extend(batch)
         if len(records) >= _MAX_RECORDS:
+            overflow = len(records) > _MAX_RECORDS
             records = records[:_MAX_RECORDS]
-            truncated = len(batch) == _PAGE_LIMIT
+            # Plná poslední povolená stránka sama neříká, zda existuje 501.
+            # Pokud upstream neposkytne spolehlivý total, levná sonda další
+            # stránky rozliší přesně 500 od 500+ bez stažení dalších dat.
+            total = payload.get("totalItemsCount") if isinstance(payload, dict) else None
+            if overflow:
+                truncated = True
+            elif isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+                truncated = total > _MAX_RECORDS
+            elif len(batch) == _PAGE_LIMIT:
+                probe = _fetch(session, "orders", {**params, "page": page + 1})
+                truncated = bool(_page_items(probe))
             break
         if len(batch) < _PAGE_LIMIT:
             break
@@ -257,11 +307,17 @@ def _collect_orders(
 
 def _order_date_filter(date_from: str | None, date_to: str | None) -> str | None:
     """Sestav Dotykačka `filter` výraz pro rozsah pole `created`."""
+    parsed_from = _day(date_from, "date_from") if date_from else None
+    parsed_to = _day(date_to, "date_to") if date_to else None
+    if parsed_from is not None and parsed_to is not None and parsed_from >= parsed_to:
+        raise ConnectorError(
+            ErrorCode.INVALID_INPUT, "date_from musí být dříve než date_to."
+        )
     clauses = []
-    if date_from:
-        clauses.append(f"created|gteq|{_iso(_day(date_from, 'date_from'))}")
-    if date_to:
-        clauses.append(f"created|lt|{_iso(_day(date_to, 'date_to'))}")
+    if parsed_from is not None:
+        clauses.append(f"created|gteq|{_iso(parsed_from)}")
+    if parsed_to is not None:
+        clauses.append(f"created|lt|{_iso(parsed_to)}")
     return ";".join(clauses) if clauses else None
 
 
@@ -272,7 +328,7 @@ def list_orders(
     date_from: Annotated[str | None, _D_DATE_FROM] = None,
     date_to: Annotated[str | None, _D_DATE_TO] = None,
     include_items: Annotated[
-        bool, Field(description="Připojit položky dokladu (orderItems) a peněžní logy.")
+        bool, Field(description="Připojit položky dokladu (orderItems).")
     ] = False,
     limit: Annotated[int, _D_LIMIT] = _DEFAULT_LIMIT,
     page: Annotated[int, _D_PAGE] = 1,
@@ -284,7 +340,7 @@ def list_orders(
     pseudonymizovány; prodejní čísla procházejí. Pro víc dokladů stránkuj `page`.
     """
     params: dict[str, Any] = {
-        "sort": "created",
+        "sort": "-created",
         "limit": _clamp_limit(limit),
         "page": max(1, page),
     }
@@ -292,7 +348,7 @@ def list_orders(
     if filters:
         params["filter"] = filters
     if include_items:
-        params["include"] = "orderItems,moneyLogs"
+        params["include"] = "orderItems"
     with _Session() as session:
         data = _fetch(session, "orders", params)
         provenance = session.provenance("orders")
@@ -302,11 +358,11 @@ def list_orders(
 def get_order(
     order_id: Annotated[int | str, Field(description="ID účtenky/objednávky.")],
     include_items: Annotated[
-        bool, Field(description="Připojit položky dokladu (orderItems) a peněžní logy.")
+        bool, Field(description="Připojit položky dokladu (orderItems).")
     ] = True,
 ) -> OrderDetailResult:
     """Detail účtenky/objednávky podle ID, ve výchozím stavu včetně položek."""
-    params = {"include": "orderItems,moneyLogs"} if include_items else None
+    params = {"include": "orderItems"} if include_items else None
     with _Session() as session:
         data = _fetch(session, f"orders/{_seg(order_id)}", params)
         provenance = session.provenance("orders")
@@ -398,13 +454,27 @@ def get_cloud_info() -> CloudInfoResult:
 # =============================================================================
 def _num(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return default
+    return parsed if parsed.is_finite() else default
+
+
+def _quantized_float(value: Decimal, quantum: Decimal) -> float:
+    """Vrať vždy JSON-bezpečné konečné číslo i pro vadný extrémní upstream."""
+    try:
+        result = float(value.quantize(quantum))
+    except (InvalidOperation, OverflowError, ValueError):
+        return 0.0
+    return result if isfinite(result) else 0.0
 
 
 def _money(value: Decimal) -> float:
-    return float(value.quantize(Decimal("0.01")))
+    return _quantized_float(value, Decimal("0.01"))
+
+
+def _quantity(value: Decimal) -> float:
+    return _quantized_float(value, Decimal("0.001"))
 
 
 def sales_summary(
@@ -463,7 +533,7 @@ def sales_summary(
         {
             "name": name,
             "revenue": _money(rev),
-            "quantity": float(prod_qty[name].quantize(Decimal("0.001"))),
+            "quantity": _quantity(prod_qty[name]),
         }
         for name, rev in sorted(prod_rev.items(), key=lambda kv: -kv[1])[:15]
     ]
@@ -503,45 +573,67 @@ def sales_summary(
 def test_connection() -> str:
     """Ad-hoc test spojení s Dotykačkou — ověří, že OAuth přístup funguje.
 
-    Lehký GET `/clouds/{cloud_id}` (bez PII sanitizace ani envelope). Chyby se
-    klasifikují strukturovaně přes `ConnectorError.status`, ne parsováním
-    textu. Cesta obsahuje jediný parametr — `cloud_id` z uloženého propojení —
-    takže každá 4xx mluví o autorizaci, ne o vstupu uživatele: 401/403
-    vypršelá nebo odvolaná autorizace, 404/410 cloud pod tímto propojením
-    neexistuje (přepojený nebo zrušený účet), 400 vadný tvar `cloud_id`.
-    Všechno jsou trvalé stavy → INVALID_INPUT, ze kterého platforma udělá
-    `credential_invalid`; jen dočasné problémy (timeout, 5xx, rate limit) →
-    UPSTREAM_UNAVAILABLE. Klientovi se nikdy nevrací syrový text výjimky.
+    Lehký jednorázový GET `/clouds/{cloud_id}` (bez PII sanitizace ani envelope)
+    má krátký tvrdý timeout. Chyby se klasifikují strukturovaně přes
+    `ConnectorError.status`, ne parsováním textu: 400/401 jsou vadné nebo
+    odvolané credentials, 403 chybějící oprávnění, 404/410 neznámý cloud, 429
+    omezení provozu a ostatní selhání dočasná nedostupnost upstreamu. Klientovi
+    se nikdy nevrací syrový text výjimky ani identifikátor cloudu.
     """
     try:
         oauth = _oauth()
+        cloud_id = _normalize_cloud_id(oauth.cloud_id)
         client = UpstreamClient(
             base_url=BASE_URL,
             token_provider=oauth,
-            retry=SERVER_ERRORS_ONLY,
+            retry=NO_RETRY,
+            timeout=_PROBE_TIMEOUT_S,
+            connect_timeout=_PROBE_CONNECT_TIMEOUT_S,
         )
     except (ConnectorError, AttributeError, KeyError) as exc:
+        if isinstance(exc, ConnectorError):
+            raise
         raise ConnectorError(
-            ErrorCode.INVALID_INPUT,
+            ErrorCode.CREDENTIAL_INVALID,
             "Chybí platná autorizace Dotykačky",
         ) from exc
 
     try:
-        client.get_json(f"/clouds/{client.seg(oauth.cloud_id)}")
+        client.get_json(f"/clouds/{client.seg(cloud_id)}")
     except ConnectorError as exc:
-        if exc.status in (400, 401, 403, 404, 410):
+        if exc.status in (400, 401) or exc.code is ErrorCode.CREDENTIAL_INVALID:
             raise ConnectorError(
-                ErrorCode.INVALID_INPUT,
+                ErrorCode.CREDENTIAL_INVALID,
                 "Autorizace Dotykačky vypršela nebo byla odvolána — propoj konektor znovu.",
+                status=exc.status,
+            ) from exc
+        if exc.status == 403 or exc.code is ErrorCode.PROVIDER_PERMISSION_DENIED:
+            raise ConnectorError(
+                ErrorCode.PROVIDER_PERMISSION_DENIED,
+                "Dotykačka odepřela přístup — účet nemá potřebné oprávnění k API.",
+                status=exc.status,
+            ) from exc
+        if exc.status in (404, 410) or exc.code is ErrorCode.INSTANCE_UNKNOWN:
+            raise ConnectorError(
+                ErrorCode.INSTANCE_UNKNOWN,
+                "Dotykačka nezná uložený cloud — propoj konektor znovu.",
+                status=exc.status,
+            ) from exc
+        if exc.status == 429 or exc.code is ErrorCode.RATE_LIMITED:
+            raise ConnectorError(
+                ErrorCode.RATE_LIMITED,
+                "Dotykačka dočasně omezila počet požadavků. Zkus to prosím později.",
+                status=exc.status,
             ) from exc
         raise ConnectorError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Nepodařilo se spojit s Dotykačkou — zkus to prosím znovu.",
+            status=exc.status,
         ) from exc
     finally:
         client.close()
 
-    return f"Připojeno k cloudu {oauth.cloud_id}"
+    return "Připojení k Dotykačce je funkční."
 
 
 # =============================================================================

@@ -55,7 +55,7 @@ def test_openai_handoff_is_fail_closed_and_exact(tmp_path: Path):
     assert submission["artifact_kind"] == "operator_handoff"
     assert submission["installable"] is False
     assert submission["submission_state"] == "blocked"
-    assert submission["connector"] == {"slug": "dotykacka", "version": "0.1.0"}
+    assert submission["connector"] == {"slug": "dotykacka", "version": "0.1.1"}
     assert submission["mcp_server_url"] is None
     assert submission["workspace_mcp_server_url_template"] == (
         "https://mcp.openmcp.cz/w/{workspace}/mcp"
@@ -101,7 +101,7 @@ def test_openai_handoff_is_fail_closed_and_exact(tmp_path: Path):
 
 def test_gemini_bundle_is_remote_only_sensitive_and_exact(tmp_path: Path):
     _, output = _render(tmp_path)
-    archive_path = output / "openmcp-dotykacka-0.1.0-gemini.zip"
+    archive_path = output / "openmcp-dotykacka-0.1.1-gemini.zip"
 
     with zipfile.ZipFile(archive_path) as archive:
         assert archive.namelist() == [
@@ -114,7 +114,7 @@ def test_gemini_bundle_is_remote_only_sensitive_and_exact(tmp_path: Path):
         install = archive.read("INSTALL.md").decode("utf-8")
 
     assert extension["name"] == "openmcp-dotykacka"
-    assert extension["version"] == "0.1.0"
+    assert extension["version"] == "0.1.1"
     assert extension["contextFileName"] == "GEMINI.md"
     assert set(extension["mcpServers"]) == {"dotykacka"}
     server = extension["mcpServers"]["dotykacka"]
@@ -184,6 +184,18 @@ def test_release_gate_paths_match_rendered_artifacts(tmp_path: Path):
         for artifact in gate.artifacts
     )
     assert yaml.safe_load((ROOT / gate.high_approvals).read_text(encoding="utf-8")) == []
+
+    sdk_ref = (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip()
+    expected_sdk_archive = f"release/vendor/openmcp-sdk-{sdk_ref}.tar.gz"
+    assert all(expected_sdk_archive in artifact.lockfiles for artifact in gate.artifacts)
+    assert all(
+        not any(
+            lockfile.startswith("release/vendor/openmcp-sdk-")
+            and lockfile != expected_sdk_archive
+            for lockfile in artifact.lockfiles
+        )
+        for artifact in gate.artifacts
+    )
 
 
 def test_all_workflow_actions_are_commit_pinned():
@@ -264,7 +276,7 @@ def test_dependency_and_container_inputs_are_pinned():
         "399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
     ) in dockerfile
     assert (ROOT / ".sdk-ref").read_text(encoding="utf-8").strip() == (
-        "2f041cfa33d4116cf06fb4f26169d16001cf968b"
+        "0d36cf1a93c870fe237ecbe3bee7b52b202df18d"
     )
     assert "--require-hashes" in dockerfile
     assert "--no-deps --no-build-isolation" in dockerfile

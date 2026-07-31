@@ -27,8 +27,8 @@ def test_basic_identity() -> None:
     m = _manifest()
     assert m.slug == "dotykacka"
     assert m.name == "Dotykačka"
-    assert m.version == "0.1.0"
-    assert m.sdk_min_version == "0.4.0"
+    assert m.version == "0.1.1"
+    assert m.sdk_min_version == "0.4.3"
     assert m.category == "pokladna"
 
 
@@ -72,7 +72,7 @@ def test_operator_config_cannot_disable_pii_boundary() -> None:
 
 def test_egress_allows_dotykacka_over_get_and_post() -> None:
     egress = _manifest().egress
-    assert egress.host == "*.dotykacka.cz"
+    assert egress.host == "api.dotykacka.cz"
     assert egress.port == 443
     assert egress.path_prefix == "/v2"
     # POST je nutný pro /v2/signin/token (výměna refresh → access token).

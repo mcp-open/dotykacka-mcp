@@ -8,8 +8,9 @@ Dotykačka schéma: která pole jsou osobní údaj a jaké kategorii odpovídaj�
 from __future__ import annotations
 
 from types import MappingProxyType
+from typing import Any
 
-from openmcp_sdk.pii import PiiPolicy
+from openmcp_sdk.pii import PiiPolicy, Pseudonymizer
 
 # --- Názvy koncových polí → kategorie tokenu (case-insensitive) ---------------
 # Dotykačka vrací pole v camelCase; mapujeme podle názvu skalární PII pole.
@@ -24,6 +25,8 @@ FIELD_CATEGORY: dict[str, str] = {
     "fax": "PHONE",
     # adresa (části)
     "street": "ADDR",
+    "addressline1": "ADDR",
+    "addressline2": "ADDR",
     "city": "ADDR",
     "zip": "ADDR",
     "zipcode": "ADDR",
@@ -34,6 +37,7 @@ FIELD_CATEGORY: dict[str, str] = {
     "lng": "GEO",
     # identifikátory (fyzická osoba / OSVČ)
     "companyid": "REGNUM",
+    "companyid2": "TAXNUM",
     "ico": "REGNUM",
     "regid": "REGNUM",
     "vatid": "TAXNUM",
@@ -44,6 +48,8 @@ FIELD_CATEGORY: dict[str, str] = {
     # osobní
     "birthday": "BIRTHDAY",
     "birthdate": "BIRTHDAY",
+    # Identita zaměstnance, který záznam naposledy upravil.
+    "modifiedby": "ID",
 }
 
 # Jména osob — u pokladny je tokenizujeme vždy (jsou to osobní data
@@ -59,7 +65,30 @@ PERSON_OBJECT_FIELDS = frozenset(
 )
 
 # Volnotextová pole — vyčistíme jen vnořené e-maily/telefony/URL, zbytek necháme.
-FREETEXT_FIELDS = frozenset({"note", "notes", "description", "text"})
+FREETEXT_FIELDS = frozenset(
+    {"note", "notes", "description", "text", "internalnote", "headerprint"}
+)
+
+# `barcode` je u zákazníka věrnostní identifikátor a u zaměstnance osobní
+# identifikátor, ale u produktu je to běžná katalogová hodnota. Globální
+# `field_category` by proto zničila čitelnost katalogu; tokenizuje se jen v
+# person-scope, který list_customers/list_employees a vnořené osoby vynucují.
+_PERSON_IDENTIFIER_FIELDS = frozenset({"barcode"})
+
+
+class DotykackaPseudonymizer(Pseudonymizer):
+    """Dotykačka výjimky, které závisí na kontextu objektu osoby."""
+
+    def handle_field(self, key: str, value: Any, *, person_scope: bool) -> Any:
+        if key.lower() in _PERSON_IDENTIFIER_FIELDS:
+            if person_scope:
+                return self._tokenize_by_category("ID", value, person_scope=person_scope)
+            # Produktový EAN není telefon ani PII. Obecný regex scrub by čistě
+            # číselný EAN jinak chybně změnil na <PHONE_…>.
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                return value
+        return self.UNHANDLED
+
 
 POLICY = PiiPolicy(
     field_category=MappingProxyType(FIELD_CATEGORY),
