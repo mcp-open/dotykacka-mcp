@@ -1,0 +1,14 @@
+# Changelog
+
+## 0.1.1 — 2026-07-31
+
+- Opravené pořadí nejnovějších objednávek, validace období, bezpečné zpracování
+  vadných čísel, minimální projekce bez platebních logů a pravdivé zkrácení.
+- Zpřesněná ochrana osobních údajů podle aktuálního schématu Dotykačka a stabilní
+  pseudonymy pro sdílené týmové přihlašovací údaje.
+- Bezpečnější validace `cloud_id`, klasifikace testu spojení a omezený timeout
+  bez opakování dočasných upstream chyb; expirovaný access token hlášený stavem
+  403 se obnoví jen jednou a trvalý 403 zůstane chybou oprávnění.
+- Hraniční sonda agregace chápe dokumentovanou 404 prázdné stránky jako přesně
+  500 dokladů, ale nepolyká rate limit, permission ani upstream chyby.
+- Připnutý OpenMCP SDK 0.4.3 a opravený release gate pro přesný vendored snapshot.

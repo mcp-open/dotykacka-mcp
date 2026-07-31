@@ -46,7 +46,7 @@ openmcp-sdk render-adapters connector.yaml distribution.yaml \
 Remote render záměrně nevytvoří `.mcpb`:
 
 - `openai/submission.json` je `operator_handoff` s `installable: false`;
-- `openmcp-dotykacka-0.1.0-gemini.zip` je kontrolovaný operátorský bundle,
+- `openmcp-dotykacka-0.1.1-gemini.zip` je kontrolovaný operátorský bundle,
   nikoli přímá veřejná instalace.
 
 ## Gemini CLI — interní pilot
